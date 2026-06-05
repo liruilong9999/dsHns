@@ -17,6 +17,9 @@ pub mod context_management;
 /// 事件总线模块，负责按会话和智能体路由事件。
 pub mod event_bus;
 
+/// 指标模块，负责会话指标快照与刷新。
+pub mod metrics;
+
 /// 仓储模块，负责目录、会话与消息的持久化访问。
 pub mod repository;
 

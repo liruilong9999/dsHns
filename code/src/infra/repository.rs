@@ -217,7 +217,7 @@ impl<'a> WorkspaceRepository<'a> {
     }
 
     /// 生成下一个目录标识。
-    fn next_identifier(
+    pub(crate) fn next_identifier(
         connection: &Connection,
         table_name: &str,
         id_column_name: &str,

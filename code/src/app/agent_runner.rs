@@ -10,6 +10,7 @@ use crate::infra::context_management::{
 };
 use crate::infra::db::SqliteDatabase;
 use crate::infra::event_bus::{EventBus, EventEnvelope, EventType};
+use crate::infra::metrics::{MetricsCollector, SessionMetricInput};
 use crate::infra::prompting::{PromptAssembler, PromptAssemblerConfig, PromptAssemblyInput};
 use crate::infra::repository::{MessageRepository, RepositoryError, SessionRepository};
 use crate::infra::tool_system::{ToolDispatcher, ToolRuntimeConfig};
@@ -333,6 +334,26 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                     Some(&round_id),
                     serde_json::json!({ "content": content.clone() }),
                 ));
+                let _ = MetricsCollector::new(self.database)
+                    .with_event_bus(
+                        self.event_bus
+                            .clone()
+                            .unwrap_or_else(|| EventBus::new(self.database)),
+                    )
+                    .record_snapshot(SessionMetricInput {
+                        session_id: request.session_id.clone(),
+                        agent_id: Some(request.agent_id.clone()),
+                        input_tokens: context_manager.estimate_tokens(&prompt_snapshot) as i64,
+                        output_tokens: context_manager.estimate_tokens(&content) as i64,
+                        cache_hit_rate: 0.0,
+                        remaining_context: (session.context_limit
+                            - context_manager.estimate_tokens(&prompt_snapshot) as i64
+                            - 4_096)
+                            .max(0),
+                        tool_success_count: 0,
+                        tool_failure_count: 0,
+                        active_tool_calls: 0,
+                    });
                 state_history.push("Completed".to_string());
                 Ok(AgentRoundOutcome {
                     status: AgentRoundStatus::Completed,
@@ -472,6 +493,35 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                             Some(&round_id),
                             serde_json::json!({ "content": content.clone() }),
                         ));
+                        let tool_success_count = tool_responses
+                            .iter()
+                            .filter(|response| response.status == ToolExecutionStatus::Success)
+                            .count() as i64;
+                        let tool_failure_count = tool_responses
+                            .iter()
+                            .filter(|response| response.status != ToolExecutionStatus::Success)
+                            .count() as i64;
+                        let _ = MetricsCollector::new(self.database)
+                            .with_event_bus(
+                                self.event_bus
+                                    .clone()
+                                    .unwrap_or_else(|| EventBus::new(self.database)),
+                            )
+                            .record_snapshot(SessionMetricInput {
+                                session_id: request.session_id.clone(),
+                                agent_id: Some(request.agent_id.clone()),
+                                input_tokens: context_manager.estimate_tokens(&prompt_snapshot)
+                                    as i64,
+                                output_tokens: context_manager.estimate_tokens(&content) as i64,
+                                cache_hit_rate: 0.0,
+                                remaining_context: (session.context_limit
+                                    - context_manager.estimate_tokens(&prompt_snapshot) as i64
+                                    - 4_096)
+                                    .max(0),
+                                tool_success_count,
+                                tool_failure_count,
+                                active_tool_calls: 0,
+                            });
                         state_history.push("Completed".to_string());
                         Ok(AgentRoundOutcome {
                             status: AgentRoundStatus::Completed,

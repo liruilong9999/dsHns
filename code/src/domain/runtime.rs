@@ -97,3 +97,34 @@ pub struct ContextCompressionRecord {
     /// 创建时间。
     pub created_at: String,
 }
+
+/// 会话指标快照记录。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionMetricRecord {
+    /// 指标标识。
+    pub metric_id: String,
+    /// 所属会话标识。
+    pub session_id: String,
+    /// 关联智能体标识。
+    pub agent_id: Option<String>,
+    /// 输入 `Token`。
+    pub input_tokens: i64,
+    /// 输出 `Token`。
+    pub output_tokens: i64,
+    /// 缓存命中率。
+    pub cache_hit_rate: f64,
+    /// 剩余上下文。
+    pub remaining_context: i64,
+    /// 工具成功次数。
+    pub tool_success_count: i64,
+    /// 工具失败次数。
+    pub tool_failure_count: i64,
+    /// 当前活跃会话数。
+    pub active_sessions: i64,
+    /// 当前活跃子智能体数。
+    pub active_child_agents: i64,
+    /// 当前活跃工具数。
+    pub active_tool_calls: i64,
+    /// 创建时间。
+    pub created_at: String,
+}
