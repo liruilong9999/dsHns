@@ -8,6 +8,12 @@ pub mod config;
 /// 数据库模块，负责 `SQLite` 连接管理与迁移执行。
 pub mod db;
 
+/// 子智能体管理模块，负责父子关系与生命周期流转。
+pub mod agent_management;
+
+/// 事件总线模块，负责按会话和智能体路由事件。
+pub mod event_bus;
+
 /// 仓储模块，负责目录、会话与消息的持久化访问。
 pub mod repository;
 

@@ -6,6 +6,9 @@ use crate::domain::tool::{
     SessionApprovalMode, ToolCallRequest, ToolMetadata, ToolPermission, ToolResponse,
     ToolSchemaNode, ToolValueType,
 };
+use crate::infra::agent_management::{
+    ChildAgentDispatchRequest, ChildAgentManager, ChildAgentMode, CreateChildAgentRequest,
+};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -76,23 +79,32 @@ impl ToolRegistry {
 }
 
 /// 工具调度器。
-pub struct ToolDispatcher {
+pub struct ToolDispatcher<'a> {
     /// 工具运行时配置。
     runtime_config: ToolRuntimeConfig,
     /// 工具注册中心。
     registry: ToolRegistry,
     /// 按轮次统计的执行状态。
     round_states: HashMap<String, RoundExecutionState>,
+    /// 可选子智能体管理器。
+    child_agent_manager: Option<ChildAgentManager<'a>>,
 }
 
-impl ToolDispatcher {
+impl<'a> ToolDispatcher<'a> {
     /// 构造默认工具调度器。
     pub fn new(runtime_config: ToolRuntimeConfig) -> Self {
         Self {
             runtime_config,
             registry: ToolRegistry::with_default_tools(),
             round_states: HashMap::new(),
+            child_agent_manager: None,
         }
+    }
+
+    /// 注入子智能体管理器。
+    pub fn with_child_agent_manager(mut self, manager: ChildAgentManager<'a>) -> Self {
+        self.child_agent_manager = Some(manager);
+        self
     }
 
     /// 获取工具注册中心。
@@ -185,14 +197,7 @@ impl ToolDispatcher {
             "write_file" => self.execute_write_file(&request, &metadata),
             "load_skill" => self.execute_load_skill(&request, &metadata),
             "plan_tool" => self.execute_plan_tool(&request, &metadata),
-            "create_agent" => ToolResponse::failed(
-                &request,
-                metadata.visible,
-                "not_implemented",
-                "TOOL_NOT_IMPLEMENTED",
-                "当前阶段尚未实现 create_agent 工具。",
-                false,
-            ),
+            "create_agent" => self.execute_create_agent(&request, &metadata),
             _ => ToolResponse::failed(
                 &request,
                 metadata.visible,
@@ -214,6 +219,127 @@ impl ToolDispatcher {
         }
 
         response
+    }
+
+    /// 执行 `create_agent` 工具族。
+    fn execute_create_agent(
+        &self,
+        request: &ToolCallRequest,
+        metadata: &ToolMetadata,
+    ) -> ToolResponse {
+        let Some(manager) = &self.child_agent_manager else {
+            return ToolResponse::failed(
+                request,
+                metadata.visible,
+                "not_implemented",
+                "TOOL_NOT_IMPLEMENTED",
+                "当前阶段尚未注入子智能体管理器。",
+                false,
+            );
+        };
+
+        let action = request.arguments["action"].as_str().unwrap_or_default();
+        match action {
+            "create" => {
+                let task = request.arguments["task"].as_str().unwrap_or_default();
+                let mode = match request.arguments["mode"].as_str().unwrap_or("inherit") {
+                    "isolated" => ChildAgentMode::Isolated,
+                    _ => ChildAgentMode::Inherit,
+                };
+                match manager.create_child_agent(CreateChildAgentRequest {
+                    parent_session_id: request.session_id.clone(),
+                    parent_agent_id: request.agent_id.clone(),
+                    mode: mode.clone(),
+                    task_summary: task.to_string(),
+                    inherited_context: None,
+                }) {
+                    Ok(result) => ToolResponse::success(
+                        request,
+                        metadata.visible,
+                        None,
+                        "子智能体创建成功",
+                        json!({
+                            "child_agent_id": result.child_agent_id,
+                            "child_session_id": result.child_session_id,
+                            "mode": mode.as_str()
+                        }),
+                    ),
+                    Err(error) => ToolResponse::failed(
+                        request,
+                        metadata.visible,
+                        "execution_error",
+                        "CHILD_AGENT_CREATE_FAILED",
+                        error.to_string(),
+                        false,
+                    ),
+                }
+            }
+            "dispatch" => {
+                let child_agent_id = request.arguments["child_agent_id"]
+                    .as_str()
+                    .unwrap_or_default();
+                let task = request.arguments["task"].as_str().unwrap_or_default();
+                match manager.dispatch_child_agent(ChildAgentDispatchRequest {
+                    child_agent_id: child_agent_id.to_string(),
+                    task_summary: task.to_string(),
+                    result_summary: Some(task.to_string()),
+                }) {
+                    Ok(result) => ToolResponse::success(
+                        request,
+                        metadata.visible,
+                        None,
+                        "子智能体派发成功",
+                        json!({
+                            "child_agent_id": result.child_agent_id,
+                            "child_session_id": result.child_session_id,
+                            "status": result.current_status
+                        }),
+                    ),
+                    Err(error) => ToolResponse::failed(
+                        request,
+                        metadata.visible,
+                        "execution_error",
+                        "CHILD_AGENT_DISPATCH_FAILED",
+                        error.to_string(),
+                        false,
+                    ),
+                }
+            }
+            "destroy" => {
+                let child_agent_id = request.arguments["child_agent_id"]
+                    .as_str()
+                    .unwrap_or_default();
+                match manager.destroy_child_agent(child_agent_id) {
+                    Ok(result) => ToolResponse::success(
+                        request,
+                        metadata.visible,
+                        None,
+                        "子智能体销毁成功",
+                        json!({
+                            "child_agent_id": result.child_agent_id,
+                            "child_session_id": result.child_session_id,
+                            "status": result.current_status
+                        }),
+                    ),
+                    Err(error) => ToolResponse::failed(
+                        request,
+                        metadata.visible,
+                        "execution_error",
+                        "CHILD_AGENT_DESTROY_FAILED",
+                        error.to_string(),
+                        false,
+                    ),
+                }
+            }
+            _ => ToolResponse::failed(
+                request,
+                metadata.visible,
+                "validation_error",
+                "INVALID_ARGUMENT",
+                "create_agent.action 只支持 create、dispatch、destroy。",
+                true,
+            ),
+        }
     }
 
     /// 执行 `run_shell`。

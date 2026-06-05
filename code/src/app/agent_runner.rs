@@ -5,6 +5,7 @@
 use crate::domain::tool::{ToolCallRequest, ToolExecutionStatus, ToolResponse};
 use crate::infra::config::{AppConfig, ModelGatewayAvailability};
 use crate::infra::db::SqliteDatabase;
+use crate::infra::event_bus::{EventBus, EventEnvelope, EventType};
 use crate::infra::prompting::{PromptAssembler, PromptAssemblerConfig, PromptAssemblyInput};
 use crate::infra::repository::{MessageRepository, RepositoryError, SessionRepository};
 use crate::infra::tool_system::{ToolDispatcher, ToolRuntimeConfig};
@@ -162,6 +163,7 @@ pub struct AgentRunner<'a, G: ModelGatewayTrait> {
     config: &'a AppConfig,
     gateway: G,
     runner_config: AgentRunnerConfig,
+    event_bus: Option<EventBus<'a>>,
 }
 
 impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
@@ -177,7 +179,14 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
             config,
             gateway,
             runner_config,
+            event_bus: None,
         }
+    }
+
+    /// 注入事件总线。
+    pub fn with_event_bus(mut self, event_bus: EventBus<'a>) -> Self {
+        self.event_bus = Some(event_bus);
+        self
     }
 
     /// 执行一轮从用户输入到最终输出的流程。
@@ -206,6 +215,13 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
             })?;
 
         let round_id = session_repository.next_round_id()?;
+        self.publish_event(EventEnvelope::new(
+            EventType::UserMessageReceived,
+            &request.session_id,
+            None,
+            Some(&round_id),
+            serde_json::json!({ "content": request.user_input }),
+        ));
         message_repository.create_runtime_message(
             &request.session_id,
             &request.agent_id,
@@ -248,11 +264,25 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
         warnings.extend(first_assembly.warnings.clone());
 
         state_history.push("CallingModel".to_string());
+        self.publish_event(EventEnvelope::new(
+            EventType::ModelThinkingStarted,
+            &request.session_id,
+            Some(&request.agent_id),
+            Some(&round_id),
+            serde_json::json!({ "stage": "before_first_model_call" }),
+        ));
         match self.gateway.complete(ModelGatewayRequest {
             model_name: session.current_model.clone(),
             prompt: first_assembly.prompt,
         }) {
             Ok(ModelGatewayResponse::FinalText { content }) => {
+                self.publish_event(EventEnvelope::new(
+                    EventType::AssistantOutputDelta,
+                    &request.session_id,
+                    Some(&request.agent_id),
+                    Some(&round_id),
+                    serde_json::json!({ "delta": content.clone() }),
+                ));
                 message_repository.create_runtime_message(
                     &request.session_id,
                     &request.agent_id,
@@ -262,6 +292,13 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                     "plain",
                     true,
                 )?;
+                self.publish_event(EventEnvelope::new(
+                    EventType::AssistantOutputCompleted,
+                    &request.session_id,
+                    Some(&request.agent_id),
+                    Some(&round_id),
+                    serde_json::json!({ "content": content.clone() }),
+                ));
                 state_history.push("Completed".to_string());
                 Ok(AgentRoundOutcome {
                     status: AgentRoundStatus::Completed,
@@ -277,6 +314,13 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                 arguments,
             }) => {
                 state_history.push("DispatchingTool".to_string());
+                self.publish_event(EventEnvelope::new(
+                    EventType::ToolStarted,
+                    &request.session_id,
+                    Some(&request.agent_id),
+                    Some(&round_id),
+                    serde_json::json!({ "tool_name": tool_name.clone() }),
+                ));
                 let tool_response = tool_dispatcher.execute(
                     ToolCallRequest::new(
                         &tool_name,
@@ -288,6 +332,16 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                     parse_session_approval_mode(&session.session_approval_mode),
                 );
                 tool_responses.push(tool_response.clone());
+                self.publish_event(EventEnvelope::new(
+                    EventType::ToolFinished,
+                    &request.session_id,
+                    Some(&request.agent_id),
+                    Some(&round_id),
+                    serde_json::json!({
+                        "tool_name": tool_response.tool_name.clone(),
+                        "status": format!("{:?}", tool_response.status)
+                    }),
+                ));
 
                 let tool_content = if tool_response.status == ToolExecutionStatus::Success {
                     serde_json::to_string_pretty(&tool_response.result_payload)
@@ -325,11 +379,25 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                 warnings.extend(second_assembly.warnings);
 
                 state_history.push("CallingModel".to_string());
+                self.publish_event(EventEnvelope::new(
+                    EventType::ModelThinkingStarted,
+                    &request.session_id,
+                    Some(&request.agent_id),
+                    Some(&round_id),
+                    serde_json::json!({ "stage": "after_tool_call" }),
+                ));
                 match self.gateway.complete(ModelGatewayRequest {
                     model_name: session.current_model.clone(),
                     prompt: second_assembly.prompt,
                 }) {
                     Ok(ModelGatewayResponse::FinalText { content }) => {
+                        self.publish_event(EventEnvelope::new(
+                            EventType::AssistantOutputDelta,
+                            &request.session_id,
+                            Some(&request.agent_id),
+                            Some(&round_id),
+                            serde_json::json!({ "delta": content.clone() }),
+                        ));
                         message_repository.create_runtime_message(
                             &request.session_id,
                             &request.agent_id,
@@ -339,6 +407,13 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                             "plain",
                             true,
                         )?;
+                        self.publish_event(EventEnvelope::new(
+                            EventType::AssistantOutputCompleted,
+                            &request.session_id,
+                            Some(&request.agent_id),
+                            Some(&round_id),
+                            serde_json::json!({ "content": content.clone() }),
+                        ));
                         state_history.push("Completed".to_string());
                         Ok(AgentRoundOutcome {
                             status: AgentRoundStatus::Completed,
@@ -358,6 +433,12 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                 }
             }
             Err(error) => Err(AgentRunnerError::ModelRequestFailed(error.to_string())),
+        }
+    }
+
+    fn publish_event(&self, event: EventEnvelope) {
+        if let Some(event_bus) = &self.event_bus {
+            let _ = event_bus.publish(event);
         }
     }
 }

@@ -3,6 +3,7 @@
 //! 本模块负责 `workspaces`、`sessions`、`messages` 三类核心实体的
 //! `SQLite` 持久化访问，实现 `TASK-005` 的基础仓储闭环。
 
+use crate::domain::runtime::{AgentRecord, AgentRelationRecord, EventLogRecord};
 use crate::domain::workspace_session::{MessageRecord, SessionRecord, WorkspaceRecord};
 use chrono::{SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -657,5 +658,411 @@ impl<'a> MessageRepository<'a> {
                     "查询智能体是否存在失败，agent_id：{agent_id}，原因：{error}"
                 ))
             })
+    }
+}
+
+/// 智能体仓储。
+pub struct AgentRepository<'a> {
+    connection: &'a Connection,
+}
+
+impl<'a> AgentRepository<'a> {
+    pub fn new(connection: &'a Connection) -> Self {
+        Self { connection }
+    }
+
+    pub fn create_primary_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<AgentRecord, RepositoryError> {
+        let now = SessionRepository::current_timestamp();
+        self.connection
+            .execute(
+                "INSERT INTO agents
+                 (agent_id, session_id, parent_agent_id, agent_mode, depth, status, thread_key, task_summary, created_at, updated_at)
+                 VALUES (?1, ?2, NULL, 'primary', 0, 'waiting', ?3, NULL, ?4, ?4)",
+                params![agent_id, session_id, format!("THREAD-{agent_id}"), now],
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "创建主智能体失败，agent_id：{agent_id}，原因：{error}"
+                ))
+            })?;
+        self.get_by_id(agent_id)?
+            .ok_or_else(|| RepositoryError::NotFound(format!("主智能体创建后未找到：{agent_id}")))
+    }
+
+    pub fn create_child_agent(
+        &self,
+        session_id: &str,
+        parent_agent_id: &str,
+        mode: &str,
+        depth: i64,
+        status: &str,
+        task_summary: &str,
+    ) -> Result<AgentRecord, RepositoryError> {
+        let agent_id =
+            WorkspaceRepository::next_identifier(self.connection, "agents", "agent_id", "AGT")?;
+        let now = SessionRepository::current_timestamp();
+        self.connection
+            .execute(
+                "INSERT INTO agents
+                 (agent_id, session_id, parent_agent_id, agent_mode, depth, status, thread_key, task_summary, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                params![
+                    agent_id,
+                    session_id,
+                    parent_agent_id,
+                    mode,
+                    depth,
+                    status,
+                    format!("THREAD-{agent_id}"),
+                    task_summary,
+                    now
+                ],
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "创建子智能体失败，parent_agent_id：{parent_agent_id}，原因：{error}"
+                ))
+            })?;
+        self.get_by_id(&agent_id)?
+            .ok_or_else(|| RepositoryError::NotFound(format!("子智能体创建后未找到：{agent_id}")))
+    }
+
+    pub fn get_by_id(&self, agent_id: &str) -> Result<Option<AgentRecord>, RepositoryError> {
+        self.connection
+            .query_row(
+                "SELECT agent_id, session_id, parent_agent_id, agent_mode, depth, status, thread_key, task_summary, created_at, updated_at
+                 FROM agents WHERE agent_id = ?1 LIMIT 1",
+                params![agent_id],
+                |row| {
+                    Ok(AgentRecord {
+                        agent_id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        parent_agent_id: row.get(2)?,
+                        agent_mode: row.get(3)?,
+                        depth: row.get(4)?,
+                        status: row.get(5)?,
+                        thread_key: row.get(6)?,
+                        task_summary: row.get(7)?,
+                        created_at: row.get(8)?,
+                        updated_at: row.get(9)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "查询智能体失败，agent_id：{agent_id}，原因：{error}"
+                ))
+            })
+    }
+
+    pub fn update_status_and_task(
+        &self,
+        agent_id: &str,
+        status: &str,
+        task_summary: &str,
+    ) -> Result<AgentRecord, RepositoryError> {
+        let now = SessionRepository::current_timestamp();
+        let changed_rows = self
+            .connection
+            .execute(
+                "UPDATE agents
+                 SET status = ?1, task_summary = ?2, updated_at = ?3
+                 WHERE agent_id = ?4",
+                params![status, task_summary, now, agent_id],
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "更新智能体状态失败，agent_id：{agent_id}，原因：{error}"
+                ))
+            })?;
+        if changed_rows == 0 {
+            return Err(RepositoryError::NotFound(format!(
+                "智能体不存在：{agent_id}"
+            )));
+        }
+        self.get_by_id(agent_id)?
+            .ok_or_else(|| RepositoryError::NotFound(format!("智能体不存在：{agent_id}")))
+    }
+
+    pub fn count_active_children(&self) -> Result<i64, RepositoryError> {
+        self.connection
+            .query_row(
+                "SELECT COUNT(*) FROM agents
+                 WHERE agent_mode != 'primary' AND status != 'destroyed'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!("统计活跃子智能体失败，原因：{error}"))
+            })
+    }
+}
+
+/// 智能体关系仓储。
+pub struct AgentRelationRepository<'a> {
+    connection: &'a Connection,
+}
+
+impl<'a> AgentRelationRepository<'a> {
+    pub fn new(connection: &'a Connection) -> Self {
+        Self { connection }
+    }
+
+    pub fn create(
+        &self,
+        parent_agent_id: &str,
+        child_agent_id: &str,
+        relation_mode: &str,
+        handoff_summary: Option<String>,
+        result_summary: Option<String>,
+    ) -> Result<AgentRelationRecord, RepositoryError> {
+        let relation_id = WorkspaceRepository::next_identifier(
+            self.connection,
+            "agent_relations",
+            "relation_id",
+            "REL",
+        )?;
+        let now = SessionRepository::current_timestamp();
+        self.connection
+            .execute(
+                "INSERT INTO agent_relations
+                 (relation_id, parent_agent_id, child_agent_id, relation_mode, handoff_summary, result_summary, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    relation_id,
+                    parent_agent_id,
+                    child_agent_id,
+                    relation_mode,
+                    handoff_summary,
+                    result_summary,
+                    now
+                ],
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "创建智能体关系失败，child_agent_id：{child_agent_id}，原因：{error}"
+                ))
+            })?;
+        self.get_by_child_agent(child_agent_id)?.ok_or_else(|| {
+            RepositoryError::NotFound(format!("智能体关系创建后未找到：{child_agent_id}"))
+        })
+    }
+
+    pub fn get_by_child_agent(
+        &self,
+        child_agent_id: &str,
+    ) -> Result<Option<AgentRelationRecord>, RepositoryError> {
+        self.connection
+            .query_row(
+                "SELECT relation_id, parent_agent_id, child_agent_id, relation_mode, handoff_summary, result_summary, created_at
+                 FROM agent_relations WHERE child_agent_id = ?1 LIMIT 1",
+                params![child_agent_id],
+                |row| {
+                    Ok(AgentRelationRecord {
+                        relation_id: row.get(0)?,
+                        parent_agent_id: row.get(1)?,
+                        child_agent_id: row.get(2)?,
+                        relation_mode: row.get(3)?,
+                        handoff_summary: row.get(4)?,
+                        result_summary: row.get(5)?,
+                        created_at: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "查询智能体关系失败，child_agent_id：{child_agent_id}，原因：{error}"
+                ))
+            })
+    }
+
+    pub fn list_by_parent_agent(
+        &self,
+        parent_agent_id: &str,
+    ) -> Result<Vec<AgentRelationRecord>, RepositoryError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT relation_id, parent_agent_id, child_agent_id, relation_mode, handoff_summary, result_summary, created_at
+                 FROM agent_relations WHERE parent_agent_id = ?1 ORDER BY created_at ASC",
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "准备父子关系查询失败，parent_agent_id：{parent_agent_id}，原因：{error}"
+                ))
+            })?;
+        let rows = statement
+            .query_map(params![parent_agent_id], |row| {
+                Ok(AgentRelationRecord {
+                    relation_id: row.get(0)?,
+                    parent_agent_id: row.get(1)?,
+                    child_agent_id: row.get(2)?,
+                    relation_mode: row.get(3)?,
+                    handoff_summary: row.get(4)?,
+                    result_summary: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "查询父子关系失败，parent_agent_id：{parent_agent_id}，原因：{error}"
+                ))
+            })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+            RepositoryError::QueryFailed(format!(
+                "读取父子关系结果失败，parent_agent_id：{parent_agent_id}，原因：{error}"
+            ))
+        })
+    }
+
+    pub fn update_result_summary(
+        &self,
+        relation_id: &str,
+        result_summary: Option<String>,
+    ) -> Result<(), RepositoryError> {
+        self.connection
+            .execute(
+                "UPDATE agent_relations SET result_summary = ?1 WHERE relation_id = ?2",
+                params![result_summary, relation_id],
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "更新关系结果摘要失败，relation_id：{relation_id}，原因：{error}"
+                ))
+            })?;
+        Ok(())
+    }
+}
+
+/// 事件日志插入输入。
+pub struct EventLogInsertInput {
+    pub event_id: String,
+    pub round_id: Option<String>,
+    pub source_session_id: Option<String>,
+    pub session_id: String,
+    pub agent_id: Option<String>,
+    pub target_agent_id: Option<String>,
+    pub event_type: String,
+    pub payload_summary: String,
+    pub status: String,
+}
+
+/// 事件日志仓储。
+pub struct EventLogRepository<'a> {
+    connection: &'a Connection,
+}
+
+impl<'a> EventLogRepository<'a> {
+    pub fn new(connection: &'a Connection) -> Self {
+        Self { connection }
+    }
+
+    pub fn next_event_id(&self) -> Result<String, RepositoryError> {
+        WorkspaceRepository::next_identifier(self.connection, "event_logs", "event_id", "EVT")
+    }
+
+    pub fn insert(&self, input: EventLogInsertInput) -> Result<EventLogRecord, RepositoryError> {
+        let now = SessionRepository::current_timestamp();
+        self.connection
+            .execute(
+                "INSERT INTO event_logs
+                 (event_id, round_id, source_session_id, session_id, agent_id, target_agent_id, event_type, payload_summary, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    input.event_id,
+                    input.round_id,
+                    input.source_session_id,
+                    input.session_id,
+                    input.agent_id,
+                    input.target_agent_id,
+                    input.event_type,
+                    input.payload_summary,
+                    input.status,
+                    now
+                ],
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!("写入事件日志失败，原因：{error}"))
+            })?;
+        self.get_by_id(&input.event_id)?.ok_or_else(|| {
+            RepositoryError::NotFound(format!("事件日志创建后未找到：{}", input.event_id))
+        })
+    }
+
+    pub fn get_by_id(&self, event_id: &str) -> Result<Option<EventLogRecord>, RepositoryError> {
+        self.connection
+            .query_row(
+                "SELECT event_id, round_id, source_session_id, session_id, agent_id, target_agent_id, event_type, payload_summary, status, created_at
+                 FROM event_logs WHERE event_id = ?1 LIMIT 1",
+                params![event_id],
+                |row| {
+                    Ok(EventLogRecord {
+                        event_id: row.get(0)?,
+                        round_id: row.get(1)?,
+                        source_session_id: row.get(2)?,
+                        session_id: row.get(3)?,
+                        agent_id: row.get(4)?,
+                        target_agent_id: row.get(5)?,
+                        event_type: row.get(6)?,
+                        payload_summary: row.get(7)?,
+                        status: row.get(8)?,
+                        created_at: row.get(9)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "查询事件日志失败，event_id：{event_id}，原因：{error}"
+                ))
+            })
+    }
+
+    pub fn list_by_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<EventLogRecord>, RepositoryError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT event_id, round_id, source_session_id, session_id, agent_id, target_agent_id, event_type, payload_summary, status, created_at
+                 FROM event_logs WHERE session_id = ?1 ORDER BY created_at ASC",
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "准备事件日志查询失败，session_id：{session_id}，原因：{error}"
+                ))
+            })?;
+        let rows = statement
+            .query_map(params![session_id], |row| {
+                Ok(EventLogRecord {
+                    event_id: row.get(0)?,
+                    round_id: row.get(1)?,
+                    source_session_id: row.get(2)?,
+                    session_id: row.get(3)?,
+                    agent_id: row.get(4)?,
+                    target_agent_id: row.get(5)?,
+                    event_type: row.get(6)?,
+                    payload_summary: row.get(7)?,
+                    status: row.get(8)?,
+                    created_at: row.get(9)?,
+                })
+            })
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "查询事件日志失败，session_id：{session_id}，原因：{error}"
+                ))
+            })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+            RepositoryError::QueryFailed(format!(
+                "读取事件日志结果失败，session_id：{session_id}，原因：{error}"
+            ))
+        })
     }
 }
