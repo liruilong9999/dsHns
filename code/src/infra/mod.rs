@@ -11,5 +11,8 @@ pub mod db;
 /// 仓储模块，负责目录、会话与消息的持久化访问。
 pub mod repository;
 
+/// 提示词装配模块，负责 AGENTS、技能元信息与上下文拼接。
+pub mod prompting;
+
 /// 工具系统模块，负责默认工具注册、参数校验与执行调度。
 pub mod tool_system;

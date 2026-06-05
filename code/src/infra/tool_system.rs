@@ -66,6 +66,13 @@ impl ToolRegistry {
     pub fn metadata(&self, tool_name: &str) -> Option<&ToolMetadata> {
         self.metadata_map.get(tool_name)
     }
+
+    /// 获取全部工具元数据，按工具名排序返回。
+    pub fn all_metadata(&self) -> Vec<&ToolMetadata> {
+        let mut items = self.metadata_map.values().collect::<Vec<_>>();
+        items.sort_by(|left, right| left.name.cmp(&right.name));
+        items
+    }
 }
 
 /// 工具调度器。
