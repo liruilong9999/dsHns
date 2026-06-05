@@ -11,6 +11,9 @@ pub mod db;
 /// 子智能体管理模块，负责父子关系与生命周期流转。
 pub mod agent_management;
 
+/// 上下文管理模块，负责压缩触发与长结果预算。
+pub mod context_management;
+
 /// 事件总线模块，负责按会话和智能体路由事件。
 pub mod event_bus;
 

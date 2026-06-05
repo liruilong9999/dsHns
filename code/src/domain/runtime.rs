@@ -70,3 +70,30 @@ pub struct EventLogRecord {
     /// 创建时间。
     pub created_at: String,
 }
+
+/// 上下文压缩记录。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextCompressionRecord {
+    /// 压缩记录标识。
+    pub compression_id: String,
+    /// 所属会话标识。
+    pub session_id: String,
+    /// 发起压缩的智能体标识。
+    pub agent_id: String,
+    /// 压缩起始消息标识。
+    pub source_start_message_id: String,
+    /// 压缩结束消息标识。
+    pub source_end_message_id: String,
+    /// 压缩摘要。
+    pub summary_text: String,
+    /// 保留消息数量。
+    pub kept_message_count: i64,
+    /// 触发原因。
+    pub trigger_reason: String,
+    /// 压缩前估算 `Token`。
+    pub estimated_tokens_before: i64,
+    /// 压缩后估算 `Token`。
+    pub estimated_tokens_after: i64,
+    /// 创建时间。
+    pub created_at: String,
+}

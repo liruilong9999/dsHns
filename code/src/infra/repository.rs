@@ -3,7 +3,9 @@
 //! 本模块负责 `workspaces`、`sessions`、`messages` 三类核心实体的
 //! `SQLite` 持久化访问，实现 `TASK-005` 的基础仓储闭环。
 
-use crate::domain::runtime::{AgentRecord, AgentRelationRecord, EventLogRecord};
+use crate::domain::runtime::{
+    AgentRecord, AgentRelationRecord, ContextCompressionRecord, EventLogRecord,
+};
 use crate::domain::workspace_session::{MessageRecord, SessionRecord, WorkspaceRecord};
 use chrono::{SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -625,6 +627,26 @@ impl<'a> MessageRepository<'a> {
         })
     }
 
+    /// 批量把消息标记为压缩源。
+    pub fn mark_messages_as_compressed_source(
+        &self,
+        message_ids: &[String],
+    ) -> Result<(), RepositoryError> {
+        for message_id in message_ids {
+            self.connection
+                .execute(
+                    "UPDATE messages SET is_compressed_source = 1 WHERE message_id = ?1",
+                    params![message_id],
+                )
+                .map_err(|error| {
+                    RepositoryError::QueryFailed(format!(
+                        "标记压缩源消息失败，message_id：{message_id}，原因：{error}"
+                    ))
+                })?;
+        }
+        Ok(())
+    }
+
     /// 生成下一个消息顺序号。
     fn next_sequence_no(&self, session_id: &str) -> Result<i64, RepositoryError> {
         let next_sequence_no = self
@@ -658,6 +680,140 @@ impl<'a> MessageRepository<'a> {
                     "查询智能体是否存在失败，agent_id：{agent_id}，原因：{error}"
                 ))
             })
+    }
+}
+
+/// 上下文压缩仓储。
+pub struct ContextCompressionRepository<'a> {
+    connection: &'a Connection,
+}
+
+impl<'a> ContextCompressionRepository<'a> {
+    pub fn new(connection: &'a Connection) -> Self {
+        Self { connection }
+    }
+
+    pub fn create(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        source_start_message_id: &str,
+        source_end_message_id: &str,
+        summary_text: &str,
+        kept_message_count: i64,
+        trigger_reason: &str,
+        estimated_tokens_before: i64,
+        estimated_tokens_after: i64,
+    ) -> Result<ContextCompressionRecord, RepositoryError> {
+        let compression_id = WorkspaceRepository::next_identifier(
+            self.connection,
+            "context_compressions",
+            "compression_id",
+            "CMP",
+        )?;
+        let now = SessionRepository::current_timestamp();
+        self.connection
+            .execute(
+                "INSERT INTO context_compressions
+                 (compression_id, session_id, agent_id, source_start_message_id, source_end_message_id, summary_text, kept_message_count, trigger_reason, estimated_tokens_before, estimated_tokens_after, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    compression_id,
+                    session_id,
+                    agent_id,
+                    source_start_message_id,
+                    source_end_message_id,
+                    summary_text,
+                    kept_message_count,
+                    trigger_reason,
+                    estimated_tokens_before,
+                    estimated_tokens_after,
+                    now
+                ],
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "写入压缩记录失败，session_id：{session_id}，原因：{error}"
+                ))
+            })?;
+        self.get_by_id(&compression_id)?
+            .ok_or_else(|| RepositoryError::NotFound(format!("压缩记录未找到：{compression_id}")))
+    }
+
+    pub fn get_by_id(
+        &self,
+        compression_id: &str,
+    ) -> Result<Option<ContextCompressionRecord>, RepositoryError> {
+        self.connection
+            .query_row(
+                "SELECT compression_id, session_id, agent_id, source_start_message_id, source_end_message_id, summary_text, kept_message_count, trigger_reason, estimated_tokens_before, estimated_tokens_after, created_at
+                 FROM context_compressions WHERE compression_id = ?1 LIMIT 1",
+                params![compression_id],
+                |row| {
+                    Ok(ContextCompressionRecord {
+                        compression_id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        agent_id: row.get(2)?,
+                        source_start_message_id: row.get(3)?,
+                        source_end_message_id: row.get(4)?,
+                        summary_text: row.get(5)?,
+                        kept_message_count: row.get(6)?,
+                        trigger_reason: row.get(7)?,
+                        estimated_tokens_before: row.get(8)?,
+                        estimated_tokens_after: row.get(9)?,
+                        created_at: row.get(10)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "查询压缩记录失败，compression_id：{compression_id}，原因：{error}"
+                ))
+            })
+    }
+
+    pub fn list_by_session_id(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<ContextCompressionRecord>, RepositoryError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT compression_id, session_id, agent_id, source_start_message_id, source_end_message_id, summary_text, kept_message_count, trigger_reason, estimated_tokens_before, estimated_tokens_after, created_at
+                 FROM context_compressions WHERE session_id = ?1 ORDER BY created_at ASC",
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "准备压缩记录查询失败，session_id：{session_id}，原因：{error}"
+                ))
+            })?;
+        let rows = statement
+            .query_map(params![session_id], |row| {
+                Ok(ContextCompressionRecord {
+                    compression_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    agent_id: row.get(2)?,
+                    source_start_message_id: row.get(3)?,
+                    source_end_message_id: row.get(4)?,
+                    summary_text: row.get(5)?,
+                    kept_message_count: row.get(6)?,
+                    trigger_reason: row.get(7)?,
+                    estimated_tokens_before: row.get(8)?,
+                    estimated_tokens_after: row.get(9)?,
+                    created_at: row.get(10)?,
+                })
+            })
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "查询压缩记录失败，session_id：{session_id}，原因：{error}"
+                ))
+            })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+            RepositoryError::QueryFailed(format!(
+                "读取压缩记录结果失败，session_id：{session_id}，原因：{error}"
+            ))
+        })
     }
 }
 

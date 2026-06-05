@@ -4,6 +4,10 @@
 
 use crate::domain::tool::{ToolCallRequest, ToolExecutionStatus, ToolResponse};
 use crate::infra::config::{AppConfig, ModelGatewayAvailability};
+use crate::infra::context_management::{
+    CompressionReason, ContextManager, ContextManagerConfig, LongResultBudgetInput,
+    LongResultStrategy,
+};
 use crate::infra::db::SqliteDatabase;
 use crate::infra::event_bus::{EventBus, EventEnvelope, EventType};
 use crate::infra::prompting::{PromptAssembler, PromptAssemblerConfig, PromptAssemblyInput};
@@ -238,6 +242,7 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
             skill_root_path: self.runner_config.skill_root_path.clone(),
             system_prompt: self.runner_config.system_prompt.clone(),
         });
+        let context_manager = ContextManager::new(self.database, ContextManagerConfig::default());
         let tool_dispatcher = &mut ToolDispatcher::new(ToolRuntimeConfig::new(
             self.runner_config.workspace_root_path.clone(),
             self.runner_config.skill_root_path.clone(),
@@ -260,8 +265,37 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                 },
             )
             .map_err(AgentRunnerError::ModelRequestFailed)?;
-        let prompt_snapshot = first_assembly.prompt.clone();
         warnings.extend(first_assembly.warnings.clone());
+
+        let (first_prompt, prompt_snapshot) = if first_assembly.requires_compression {
+            let compression = context_manager.compress_session_context(
+                &request.session_id,
+                &request.agent_id,
+                first_assembly.estimated_tokens,
+                CompressionReason::OverLimit,
+            )?;
+            let recomposed = prompt_assembler
+                .assemble(
+                    tool_dispatcher.registry(),
+                    PromptAssemblyInput {
+                        messages: &compression.kept_messages,
+                        current_user_input: &request.user_input,
+                        compression_summary: Some(&compression.summary_text),
+                        context_limit: session.context_limit as u32,
+                        expected_output_tokens: 4_096,
+                    },
+                )
+                .map_err(AgentRunnerError::ModelRequestFailed)?;
+            warnings.extend(recomposed.warnings.clone());
+            if recomposed.requires_compression {
+                return Err(AgentRunnerError::ModelRequestFailed(
+                    "压缩后仍超上下文上限，无法继续发起模型请求。".to_string(),
+                ));
+            }
+            (recomposed.prompt.clone(), recomposed.prompt)
+        } else {
+            (first_assembly.prompt.clone(), first_assembly.prompt)
+        };
 
         state_history.push("CallingModel".to_string());
         self.publish_event(EventEnvelope::new(
@@ -273,7 +307,7 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
         ));
         match self.gateway.complete(ModelGatewayRequest {
             model_name: session.current_model.clone(),
-            prompt: first_assembly.prompt,
+            prompt: first_prompt,
         }) {
             Ok(ModelGatewayResponse::FinalText { content }) => {
                 self.publish_event(EventEnvelope::new(
@@ -343,7 +377,7 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                     }),
                 ));
 
-                let tool_content = if tool_response.status == ToolExecutionStatus::Success {
+                let raw_tool_content = if tool_response.status == ToolExecutionStatus::Success {
                     serde_json::to_string_pretty(&tool_response.result_payload)
                         .unwrap_or_else(|_| "工具结果序列化失败。".to_string())
                 } else {
@@ -352,6 +386,30 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                         .clone()
                         .unwrap_or_else(|| "工具执行失败。".to_string())
                 };
+                let long_result_budget =
+                    context_manager.handle_long_result(LongResultBudgetInput {
+                        content: raw_tool_content,
+                        is_failure: tool_response.status != ToolExecutionStatus::Success,
+                        context_tokens_before_result: context_manager
+                            .estimate_tokens(&prompt_snapshot),
+                        max_context: session.context_limit as u32,
+                        tool_tokens: 0,
+                        skill_tokens: 0,
+                        expected_output_tokens: 4_096,
+                        model_name: session.current_model.clone(),
+                        summary_agent_available: false,
+                    });
+                let mut second_compression_summary = None;
+                if long_result_budget.strategy == LongResultStrategy::DirectAfterCompression {
+                    let compression = context_manager.compress_session_context(
+                        &request.session_id,
+                        &request.agent_id,
+                        context_manager.estimate_tokens(&prompt_snapshot),
+                        CompressionReason::OverLimit,
+                    )?;
+                    second_compression_summary = Some(compression.summary_text);
+                }
+                let tool_content = long_result_budget.content;
                 message_repository.create_runtime_message(
                     &request.session_id,
                     &request.agent_id,
@@ -370,7 +428,7 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                         PromptAssemblyInput {
                             messages: &current_messages,
                             current_user_input: "",
-                            compression_summary: None,
+                            compression_summary: second_compression_summary.as_deref(),
                             context_limit: session.context_limit as u32,
                             expected_output_tokens: 4_096,
                         },

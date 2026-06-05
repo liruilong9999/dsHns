@@ -116,7 +116,11 @@ impl PromptAssembler {
         let filtered_messages = input
             .messages
             .iter()
-            .filter(|message| message.include_in_context && message.content_type != "command_audit")
+            .filter(|message| {
+                message.include_in_context
+                    && message.content_type != "command_audit"
+                    && !message.is_compressed_source
+            })
             .map(format_message_for_prompt)
             .collect::<Vec<_>>();
         if !filtered_messages.is_empty() {
