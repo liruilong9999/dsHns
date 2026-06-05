@@ -131,6 +131,13 @@ impl SqliteDatabase {
             })
     }
 
+    /// 返回只读数据库连接引用。
+    ///
+    /// 当前阶段仓储与服务通过该连接执行数据库访问。
+    pub fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
     /// 确保文件数据库的父目录存在。
     fn ensure_parent_directory(path: &PathBuf) -> Result<(), DatabaseError> {
         if let Some(parent_directory) = path.parent() {

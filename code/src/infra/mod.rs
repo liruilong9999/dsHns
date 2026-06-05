@@ -7,3 +7,6 @@ pub mod config;
 
 /// 数据库模块，负责 `SQLite` 连接管理与迁移执行。
 pub mod db;
+
+/// 仓储模块，负责目录、会话与消息的持久化访问。
+pub mod repository;
