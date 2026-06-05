@@ -338,6 +338,69 @@ impl<'a> SessionRepository<'a> {
             .ok_or_else(|| RepositoryError::NotFound(format!("会话不存在：{session_id}")))
     }
 
+    /// 更新会话当前模型与上下文上限。
+    pub fn update_model(
+        &self,
+        session_id: &str,
+        current_model: &str,
+        context_limit: i64,
+    ) -> Result<SessionRecord, RepositoryError> {
+        let now = Self::current_timestamp();
+        let changed_rows = self
+            .connection
+            .execute(
+                "UPDATE sessions
+                 SET current_model = ?1, context_limit = ?2, updated_at = ?3
+                 WHERE session_id = ?4",
+                params![current_model, context_limit, now, session_id],
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "更新会话模型失败，session_id：{session_id}，原因：{error}"
+                ))
+            })?;
+
+        if changed_rows == 0 {
+            return Err(RepositoryError::NotFound(format!(
+                "会话不存在，无法切换模型：{session_id}"
+            )));
+        }
+
+        self.get_by_id(session_id)?
+            .ok_or_else(|| RepositoryError::NotFound(format!("会话不存在：{session_id}")))
+    }
+
+    /// 更新会话审批模式。
+    pub fn update_approval_mode(
+        &self,
+        session_id: &str,
+        session_approval_mode: &str,
+    ) -> Result<SessionRecord, RepositoryError> {
+        let now = Self::current_timestamp();
+        let changed_rows = self
+            .connection
+            .execute(
+                "UPDATE sessions
+                 SET session_approval_mode = ?1, updated_at = ?2
+                 WHERE session_id = ?3",
+                params![session_approval_mode, now, session_id],
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "更新会话审批模式失败，session_id：{session_id}，原因：{error}"
+                ))
+            })?;
+
+        if changed_rows == 0 {
+            return Err(RepositoryError::NotFound(format!(
+                "会话不存在，无法切换审批模式：{session_id}"
+            )));
+        }
+
+        self.get_by_id(session_id)?
+            .ok_or_else(|| RepositoryError::NotFound(format!("会话不存在：{session_id}")))
+    }
+
     /// 按目录查询会话列表。
     pub fn list_by_workspace_id(
         &self,
@@ -460,6 +523,50 @@ impl<'a> MessageRepository<'a> {
             .into_iter()
             .find(|message| message.message_id == message_id)
             .ok_or_else(|| RepositoryError::NotFound(format!("消息创建后未找到：{message_id}")))
+    }
+
+    /// 创建命令审计消息。
+    pub fn create_command_audit_message(
+        &self,
+        session_id: &str,
+        round_id: &str,
+        command_text: &str,
+    ) -> Result<MessageRecord, RepositoryError> {
+        let message_id =
+            WorkspaceRepository::next_identifier(self.connection, "messages", "message_id", "MSG")?;
+        let sequence_no = self.next_sequence_no(session_id)?;
+        let now = SessionRepository::current_timestamp();
+
+        self.connection
+            .execute(
+                "INSERT INTO messages
+                 (message_id, session_id, agent_id, round_id, sequence_no, role, content, content_type, token_estimate, include_in_context, is_compressed_source, created_at)
+                 VALUES (?1, ?2, NULL, ?3, ?4, 'system', ?5, 'command_audit', 0, 0, 0, ?6)",
+                params![message_id, session_id, round_id, sequence_no, command_text, now],
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "创建命令审计消息失败，session_id：{session_id}，原因：{error}"
+                ))
+            })?;
+
+        self.connection
+            .execute(
+                "UPDATE sessions
+                 SET last_message_at = ?1, updated_at = ?1
+                 WHERE session_id = ?2",
+                params![now, session_id],
+            )
+            .map_err(|error| {
+                RepositoryError::QueryFailed(format!(
+                    "更新审计消息时间失败，session_id：{session_id}，原因：{error}"
+                ))
+            })?;
+
+        self.list_by_session_id(session_id)?
+            .into_iter()
+            .find(|message| message.message_id == message_id)
+            .ok_or_else(|| RepositoryError::NotFound(format!("审计消息创建后未找到：{message_id}")))
     }
 
     /// 按会话查询消息列表。

@@ -3,7 +3,7 @@
 //! 本模块负责承接目录实体与会话实体的服务接口，统一组合仓储能力，
 //! 并按照文档契约输出目录与会话相关结果。
 
-use crate::domain::workspace_session::{MessageRecord, WorkspaceRecord};
+use crate::domain::workspace_session::{MessageRecord, SessionRecord, WorkspaceRecord};
 use crate::infra::config::{AppConfig, ApprovalMode};
 use crate::infra::db::SqliteDatabase;
 use crate::infra::repository::{
@@ -49,6 +49,44 @@ pub struct RenameSessionRequest {
     pub title: String,
 }
 
+/// 追加用户消息请求。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppendUserMessageRequest {
+    /// 会话标识。
+    pub session_id: String,
+    /// 用户消息内容。
+    pub content: String,
+}
+
+/// 命令审计请求。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandAuditRequest {
+    /// 会话标识。
+    pub session_id: String,
+    /// 命令原文。
+    pub command_text: String,
+}
+
+/// 会话模型切换请求。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeSessionModelRequest {
+    /// 会话标识。
+    pub session_id: String,
+    /// 目标模型名。
+    pub model_name: String,
+    /// 目标上下文上限。
+    pub context_limit: i64,
+}
+
+/// 会话审批模式切换请求。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeSessionApprovalModeRequest {
+    /// 会话标识。
+    pub session_id: String,
+    /// 目标审批模式。
+    pub session_approval_mode: String,
+}
+
 /// 目录响应。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceResponse {
@@ -89,6 +127,31 @@ pub struct SessionRenamedResponse {
     pub session_id: String,
     /// 新的会话标题。
     pub title: String,
+}
+
+/// 用户消息追加响应。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserMessageAppendedResponse {
+    /// 会话标识。
+    pub session_id: String,
+    /// 本次轮次标识。
+    pub round_id: String,
+}
+
+/// 会话模型切换响应。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionModelChangedResponse {
+    /// 当前模型名。
+    pub current_model: String,
+    /// 当前上下文上限。
+    pub context_limit: i64,
+}
+
+/// 会话审批模式切换响应。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionApprovalModeChangedResponse {
+    /// 当前审批模式。
+    pub session_approval_mode: String,
 }
 
 /// 会话列表项。
@@ -272,6 +335,93 @@ impl<'a> WorkspaceSessionService<'a> {
         })
     }
 
+    /// 追加一条普通用户消息。
+    pub fn append_user_message(
+        &self,
+        request: AppendUserMessageRequest,
+    ) -> Result<UserMessageAppendedResponse, WorkspaceSessionServiceError> {
+        let session_id = Self::require_non_empty_text(&request.session_id, "会话标识不能为空。")?;
+        let content = Self::require_non_empty_text(&request.content, "消息内容不能为空。")?;
+
+        self.ensure_session_exists(session_id)?;
+
+        let session_repository = SessionRepository::new(self.database.connection());
+        let round_id = session_repository.next_round_id()?;
+        let message_repository = MessageRepository::new(self.database.connection());
+        message_repository.create_user_message(session_id, &round_id, content)?;
+
+        Ok(UserMessageAppendedResponse {
+            session_id: session_id.to_string(),
+            round_id,
+        })
+    }
+
+    /// 记录命令审计消息。
+    pub fn record_command_audit(
+        &self,
+        request: CommandAuditRequest,
+    ) -> Result<(), WorkspaceSessionServiceError> {
+        let session_id = Self::require_non_empty_text(&request.session_id, "会话标识不能为空。")?;
+        let command_text =
+            Self::require_non_empty_text(&request.command_text, "命令内容不能为空。")?;
+
+        self.ensure_session_exists(session_id)?;
+
+        let session_repository = SessionRepository::new(self.database.connection());
+        let round_id = session_repository.next_round_id()?;
+        let message_repository = MessageRepository::new(self.database.connection());
+        message_repository.create_command_audit_message(session_id, &round_id, command_text)?;
+
+        Ok(())
+    }
+
+    /// 切换会话模型。
+    pub fn change_session_model(
+        &self,
+        request: ChangeSessionModelRequest,
+    ) -> Result<SessionModelChangedResponse, WorkspaceSessionServiceError> {
+        let session_id = Self::require_non_empty_text(&request.session_id, "会话标识不能为空。")?;
+        let model_name = Self::require_non_empty_text(&request.model_name, "模型名称不能为空。")?;
+
+        let repository = SessionRepository::new(self.database.connection());
+        let updated_session =
+            repository.update_model(session_id, model_name, request.context_limit)?;
+
+        Ok(SessionModelChangedResponse {
+            current_model: updated_session.current_model,
+            context_limit: updated_session.context_limit,
+        })
+    }
+
+    /// 切换会话审批模式。
+    pub fn change_session_approval_mode(
+        &self,
+        request: ChangeSessionApprovalModeRequest,
+    ) -> Result<SessionApprovalModeChangedResponse, WorkspaceSessionServiceError> {
+        let session_id = Self::require_non_empty_text(&request.session_id, "会话标识不能为空。")?;
+        let target_mode =
+            Self::require_non_empty_text(&request.session_approval_mode, "审批模式不能为空。")?;
+
+        let repository = SessionRepository::new(self.database.connection());
+        let updated_session = repository.update_approval_mode(session_id, target_mode)?;
+
+        Ok(SessionApprovalModeChangedResponse {
+            session_approval_mode: updated_session.session_approval_mode,
+        })
+    }
+
+    /// 获取会话详情。
+    pub fn get_session(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionRecord, WorkspaceSessionServiceError> {
+        let session_id = Self::require_non_empty_text(session_id, "会话标识不能为空。")?;
+        let repository = SessionRepository::new(self.database.connection());
+        repository.get_by_id(session_id)?.ok_or_else(|| {
+            WorkspaceSessionServiceError::NotFound(format!("会话不存在：{session_id}"))
+        })
+    }
+
     /// 查询指定目录下的会话列表。
     pub fn list_sessions_by_workspace(
         &self,
@@ -368,5 +518,18 @@ impl<'a> WorkspaceSessionService<'a> {
             name: record.name,
             root_path: record.root_path,
         }
+    }
+
+    /// 确认会话存在。
+    fn ensure_session_exists(&self, session_id: &str) -> Result<(), WorkspaceSessionServiceError> {
+        let repository = SessionRepository::new(self.database.connection());
+        let session = repository.get_by_id(session_id)?;
+        if session.is_none() {
+            return Err(WorkspaceSessionServiceError::NotFound(format!(
+                "会话不存在：{session_id}"
+            )));
+        }
+
+        Ok(())
     }
 }
