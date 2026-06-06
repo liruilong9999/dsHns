@@ -41,6 +41,8 @@ pub struct PromptAssemblyInput<'a> {
 pub struct PromptAssemblyResult {
     /// 最终装配出的提示词。
     pub prompt: String,
+    /// 提供给聊天模型的结构化消息。
+    pub gateway_messages: Vec<serde_json::Value>,
     /// 中文告警列表。
     pub warnings: Vec<String>,
     /// 估算输入 `Token`。
@@ -69,12 +71,15 @@ impl PromptAssembler {
     ) -> Result<PromptAssemblyResult, String> {
         let mut warnings = Vec::new();
         let mut sections = Vec::new();
+        let mut gateway_messages = Vec::new();
+        let mut system_sections = Vec::new();
 
         if let Some(global_path) = &self.config.global_agents_path {
             match fs::read_to_string(global_path) {
                 Ok(content) => {
                     if !content.trim().is_empty() {
                         sections.push(content);
+                        system_sections.push(sections.last().cloned().unwrap_or_default());
                     }
                 }
                 Err(error) => warnings.push(format!(
@@ -89,6 +94,7 @@ impl PromptAssembler {
             Ok(content) => {
                 if !content.trim().is_empty() {
                     sections.push(content);
+                    system_sections.push(sections.last().cloned().unwrap_or_default());
                 }
             }
             Err(error) => warnings.push(format!(
@@ -99,18 +105,28 @@ impl PromptAssembler {
 
         if !self.config.system_prompt.trim().is_empty() {
             sections.push(self.config.system_prompt.clone());
+            system_sections.push(self.config.system_prompt.clone());
         }
 
         let skill_metadata_summary =
             load_skill_metadata_summary(&self.config.skill_root_path, &mut warnings);
         if !skill_metadata_summary.is_empty() {
             sections.push(skill_metadata_summary);
+            system_sections.push(sections.last().cloned().unwrap_or_default());
         }
 
         if let Some(summary) = input.compression_summary {
             if !summary.trim().is_empty() {
                 sections.push(summary.to_string());
+                system_sections.push(sections.last().cloned().unwrap_or_default());
             }
+        }
+
+        if !system_sections.is_empty() {
+            gateway_messages.push(serde_json::json!({
+                "role": "system",
+                "content": system_sections.join("\n\n")
+            }));
         }
 
         let filtered_messages = input
@@ -121,13 +137,22 @@ impl PromptAssembler {
                     && message.content_type != "command_audit"
                     && !message.is_compressed_source
             })
-            .map(format_message_for_prompt)
+            .map(|message| {
+                gateway_messages.push(format_message_for_gateway(message));
+                format_message_for_prompt(message)
+            })
             .collect::<Vec<_>>();
         if !filtered_messages.is_empty() {
             sections.push(filtered_messages.join("\n"));
         }
 
-        sections.push(format!("[用户]\n{}", input.current_user_input));
+        if !input.current_user_input.trim().is_empty() {
+            sections.push(format!("[用户]\n{}", input.current_user_input));
+            gateway_messages.push(serde_json::json!({
+                "role": "user",
+                "content": input.current_user_input
+            }));
+        }
 
         let prompt = sections.join("\n\n");
         let estimated_tokens = estimate_tokens(&prompt);
@@ -151,6 +176,7 @@ impl PromptAssembler {
 
         Ok(PromptAssemblyResult {
             prompt,
+            gateway_messages,
             warnings,
             estimated_tokens,
             requires_compression,
@@ -287,6 +313,28 @@ fn format_tool_metadata_summary(metadata: &ToolMetadata) -> String {
 /// 格式化消息供提示词装配器使用。
 fn format_message_for_prompt(message: &MessageRecord) -> String {
     format!("[{}]\n{}", message.role, message.content)
+}
+
+/// 格式化消息供模型网关使用。
+fn format_message_for_gateway(message: &MessageRecord) -> serde_json::Value {
+    match message.role.as_str() {
+        "user" => serde_json::json!({
+            "role": "user",
+            "content": message.content
+        }),
+        "assistant" => serde_json::json!({
+            "role": "assistant",
+            "content": message.content
+        }),
+        "tool" => serde_json::json!({
+            "role": "assistant",
+            "content": format!("[工具结果]\n{}", message.content)
+        }),
+        _ => serde_json::json!({
+            "role": "system",
+            "content": message.content
+        }),
+    }
 }
 
 /// 简化的 `Token` 估算。

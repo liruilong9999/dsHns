@@ -121,6 +121,8 @@ fn 端到端回归应覆盖_ipc_消息处理事件与指标快照() {
             arguments: json!({
                 "path": target_file.to_string_lossy().to_string()
             }),
+            tool_call_id: "call-e2e-1".to_string(),
+            assistant_content: None,
         },
         ModelGatewayResponse::FinalText {
             content: "端到端流程执行完成。".to_string(),
@@ -142,6 +144,8 @@ fn 端到端回归应覆盖_ipc_消息处理事件与指标快照() {
             session_id: session.session_id.clone(),
             agent_id: "AGT-0001".to_string(),
             user_input: "请读取 README 并给出总结".to_string(),
+            input_already_persisted: false,
+            existing_round_id: None,
         })
         .expect("执行单轮流程失败");
     assert_eq!(outcome.final_text.as_deref(), Some("端到端流程执行完成。"));

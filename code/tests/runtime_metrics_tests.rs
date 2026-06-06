@@ -107,6 +107,8 @@ fn 单轮执行后应写入会话指标快照并发出指标事件() {
             arguments: json!({
                 "path": readme.to_string_lossy().to_string()
             }),
+            tool_call_id: "call-metrics-1".to_string(),
+            assistant_content: None,
         },
         ModelGatewayResponse::FinalText {
             content: "指标采集完成。".to_string(),
@@ -126,6 +128,8 @@ fn 单轮执行后应写入会话指标快照并发出指标事件() {
             session_id: session.session_id.clone(),
             agent_id: "AGT-0001".to_string(),
             user_input: "请读取 README 并总结".to_string(),
+            input_already_persisted: false,
+            existing_round_id: None,
         })
         .expect("执行单轮流程失败");
     assert_eq!(outcome.tool_responses.len(), 1);

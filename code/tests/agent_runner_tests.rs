@@ -106,6 +106,8 @@ fn api_key_缺失时应阻止模型请求并返回中文错误() {
             session_id: session.session_id,
             agent_id: "AGT-0001".to_string(),
             user_input: "请继续执行".to_string(),
+            input_already_persisted: false,
+            existing_round_id: None,
         })
         .expect_err("缺失 API Key 时不应继续执行");
 
@@ -143,6 +145,8 @@ fn 应支持一轮输入到工具执行再到最终输出() {
             arguments: json!({
                 "path": target_file.to_string_lossy().to_string()
             }),
+            tool_call_id: "call-test-1".to_string(),
+            assistant_content: None,
         },
         ModelGatewayResponse::FinalText {
             content: "我已经读取文件并完成总结。".to_string(),
@@ -160,6 +164,8 @@ fn 应支持一轮输入到工具执行再到最终输出() {
             session_id: session.session_id,
             agent_id: "AGT-0001".to_string(),
             user_input: "请读取 demo.txt 并总结".to_string(),
+            input_already_persisted: false,
+            existing_round_id: None,
         })
         .expect("执行单轮主流程失败");
 

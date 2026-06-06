@@ -76,6 +76,23 @@ impl ToolRegistry {
         items.sort_by(|left, right| left.name.cmp(&right.name));
         items
     }
+
+    /// 转换为网关可直接发送的工具定义列表。
+    pub fn to_gateway_tools(&self) -> Vec<Value> {
+        self.all_metadata()
+            .into_iter()
+            .map(|metadata| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": metadata.name,
+                        "description": metadata.description,
+                        "parameters": schema_to_json(&metadata.schema)
+                    }
+                })
+            })
+            .collect()
+    }
 }
 
 /// 工具调度器。
@@ -737,6 +754,31 @@ fn validate_arguments(path: &str, value: &Value, schema: &ToolSchemaNode) -> Res
 /// 把内部路径标识转换成用户可见参数名。
 fn display_path(path: &str) -> &str {
     if path == "$" { "arguments" } else { path }
+}
+
+/// 把内部参数模式转换成 JSON Schema。
+fn schema_to_json(schema: &ToolSchemaNode) -> Value {
+    match schema.value_type {
+        ToolValueType::String => json!({ "type": "string" }),
+        ToolValueType::Integer => json!({ "type": "integer" }),
+        ToolValueType::Boolean => json!({ "type": "boolean" }),
+        ToolValueType::Array => json!({
+            "type": "array",
+            "items": schema.items.as_deref().map(schema_to_json).unwrap_or_else(|| json!({}))
+        }),
+        ToolValueType::Object => {
+            let properties = schema
+                .properties
+                .iter()
+                .map(|(key, value)| (key.clone(), schema_to_json(value)))
+                .collect::<serde_json::Map<String, Value>>();
+            json!({
+                "type": "object",
+                "required": schema.required,
+                "properties": properties
+            })
+        }
+    }
 }
 
 /// 校验工作区边界。

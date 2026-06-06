@@ -202,6 +202,8 @@ fn 单轮执行器应发出模型思考增量和最终输出事件() {
             arguments: json!({
                 "path": target_file.to_string_lossy().to_string()
             }),
+            tool_call_id: "call-event-1".to_string(),
+            assistant_content: None,
         },
         ModelGatewayResponse::FinalText {
             content: "事件驱动链路完成。".to_string(),
@@ -220,6 +222,8 @@ fn 单轮执行器应发出模型思考增量和最终输出事件() {
             session_id: session.session_id.clone(),
             agent_id: "AGT-0001".to_string(),
             user_input: "请读取文件并输出".to_string(),
+            input_already_persisted: false,
+            existing_round_id: None,
         })
         .expect("执行单轮流程失败");
 

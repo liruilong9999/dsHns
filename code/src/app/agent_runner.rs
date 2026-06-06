@@ -26,6 +26,12 @@ pub struct ModelGatewayRequest {
     pub model_name: String,
     /// 装配后的提示词。
     pub prompt: String,
+    /// 结构化消息列表。
+    pub messages: Vec<Value>,
+    /// 工具定义列表。
+    pub tools: Vec<Value>,
+    /// 最大输出预算。
+    pub max_tokens: u32,
 }
 
 /// 模型网关响应。
@@ -42,6 +48,10 @@ pub enum ModelGatewayResponse {
         tool_name: String,
         /// 调用参数。
         arguments: Value,
+        /// 工具调用标识。
+        tool_call_id: String,
+        /// 助手在发起工具调用时附带的内容。
+        assistant_content: Option<String>,
     },
 }
 
@@ -105,6 +115,10 @@ pub struct AgentRoundRequest {
     pub agent_id: String,
     /// 当前用户输入。
     pub user_input: String,
+    /// 如果输入已提前写入会话，则跳过再次落盘。
+    pub input_already_persisted: bool,
+    /// 已存在的轮次标识。
+    pub existing_round_id: Option<String>,
 }
 
 /// 单轮执行状态。
@@ -219,23 +233,28 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                 AgentRunnerError::RepositoryFailed(format!("会话不存在：{}", request.session_id))
             })?;
 
-        let round_id = session_repository.next_round_id()?;
-        self.publish_event(EventEnvelope::new(
-            EventType::UserMessageReceived,
-            &request.session_id,
-            None,
-            Some(&round_id),
-            serde_json::json!({ "content": request.user_input }),
-        ));
-        message_repository.create_runtime_message(
-            &request.session_id,
-            &request.agent_id,
-            &round_id,
-            "user",
-            &request.user_input,
-            "plain",
-            true,
-        )?;
+        let round_id = request
+            .existing_round_id
+            .clone()
+            .unwrap_or(session_repository.next_round_id()?);
+        if !request.input_already_persisted {
+            self.publish_event(EventEnvelope::new(
+                EventType::UserMessageReceived,
+                &request.session_id,
+                None,
+                Some(&round_id),
+                serde_json::json!({ "content": request.user_input }),
+            ));
+            message_repository.create_runtime_message(
+                &request.session_id,
+                &request.agent_id,
+                &round_id,
+                "user",
+                &request.user_input,
+                "plain",
+                true,
+            )?;
+        }
 
         let prompt_assembler = PromptAssembler::new(PromptAssemblerConfig {
             global_agents_path: self.runner_config.global_agents_path.clone(),
@@ -251,15 +270,19 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
 
         let mut state_history = vec!["Idle".to_string(), "PreparingContext".to_string()];
         let mut warnings = Vec::new();
-        let mut tool_responses = Vec::new();
-        let mut current_messages = message_repository.list_by_session_id(&request.session_id)?;
+        let mut tool_responses: Vec<ToolResponse> = Vec::new();
+        let current_messages = message_repository.list_by_session_id(&request.session_id)?;
 
         let first_assembly = prompt_assembler
             .assemble(
                 tool_dispatcher.registry(),
                 PromptAssemblyInput {
                     messages: &current_messages,
-                    current_user_input: &request.user_input,
+                    current_user_input: if request.input_already_persisted {
+                        ""
+                    } else {
+                        &request.user_input
+                    },
                     compression_summary: None,
                     context_limit: session.context_limit as u32,
                     expected_output_tokens: 4_096,
@@ -268,7 +291,7 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
             .map_err(AgentRunnerError::ModelRequestFailed)?;
         warnings.extend(first_assembly.warnings.clone());
 
-        let (first_prompt, prompt_snapshot) = if first_assembly.requires_compression {
+        let (prompt_snapshot, first_gateway_messages) = if first_assembly.requires_compression {
             let compression = context_manager.compress_session_context(
                 &request.session_id,
                 &request.agent_id,
@@ -293,254 +316,197 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                     "压缩后仍超上下文上限，无法继续发起模型请求。".to_string(),
                 ));
             }
-            (recomposed.prompt.clone(), recomposed.prompt)
+            (recomposed.prompt, recomposed.gateway_messages)
         } else {
-            (first_assembly.prompt.clone(), first_assembly.prompt)
+            (first_assembly.prompt, first_assembly.gateway_messages.clone())
         };
 
-        state_history.push("CallingModel".to_string());
-        self.publish_event(EventEnvelope::new(
-            EventType::ModelThinkingStarted,
-            &request.session_id,
-            Some(&request.agent_id),
-            Some(&round_id),
-            serde_json::json!({ "stage": "before_first_model_call" }),
-        ));
-        match self.gateway.complete(ModelGatewayRequest {
-            model_name: session.current_model.clone(),
-            prompt: first_prompt,
-        }) {
-            Ok(ModelGatewayResponse::FinalText { content }) => {
-                self.publish_event(EventEnvelope::new(
-                    EventType::AssistantOutputDelta,
-                    &request.session_id,
-                    Some(&request.agent_id),
-                    Some(&round_id),
-                    serde_json::json!({ "delta": content.clone() }),
-                ));
-                message_repository.create_runtime_message(
-                    &request.session_id,
-                    &request.agent_id,
-                    &round_id,
-                    "assistant",
-                    &content,
-                    "plain",
-                    true,
-                )?;
-                self.publish_event(EventEnvelope::new(
-                    EventType::AssistantOutputCompleted,
-                    &request.session_id,
-                    Some(&request.agent_id),
-                    Some(&round_id),
-                    serde_json::json!({ "content": content.clone() }),
-                ));
-                let _ = MetricsCollector::new(self.database)
-                    .with_event_bus(
-                        self.event_bus
-                            .clone()
-                            .unwrap_or_else(|| EventBus::new(self.database)),
-                    )
-                    .record_snapshot(SessionMetricInput {
-                        session_id: request.session_id.clone(),
-                        agent_id: Some(request.agent_id.clone()),
-                        input_tokens: context_manager.estimate_tokens(&prompt_snapshot) as i64,
-                        output_tokens: context_manager.estimate_tokens(&content) as i64,
-                        cache_hit_rate: 0.0,
-                        remaining_context: (session.context_limit
-                            - context_manager.estimate_tokens(&prompt_snapshot) as i64
-                            - 4_096)
-                            .max(0),
-                        tool_success_count: 0,
-                        tool_failure_count: 0,
-                        active_tool_calls: 0,
-                    });
-                state_history.push("Completed".to_string());
-                Ok(AgentRoundOutcome {
-                    status: AgentRoundStatus::Completed,
-                    final_text: Some(content),
-                    state_history,
-                    tool_responses,
-                    prompt_snapshot,
-                    warnings,
-                })
-            }
-            Ok(ModelGatewayResponse::ToolCall {
-                tool_name,
-                arguments,
-            }) => {
-                state_history.push("DispatchingTool".to_string());
-                self.publish_event(EventEnvelope::new(
-                    EventType::ToolStarted,
-                    &request.session_id,
-                    Some(&request.agent_id),
-                    Some(&round_id),
-                    serde_json::json!({ "tool_name": tool_name.clone() }),
-                ));
-                let tool_response = tool_dispatcher.execute(
-                    ToolCallRequest::new(
-                        &tool_name,
+        let mut gateway_messages = first_gateway_messages.clone();
+        loop {
+            state_history.push("CallingModel".to_string());
+            self.publish_event(EventEnvelope::new(
+                EventType::ModelThinkingStarted,
+                &request.session_id,
+                Some(&request.agent_id),
+                Some(&round_id),
+                serde_json::json!({ "stage": "model_call" }),
+            ));
+            match self.gateway.complete(ModelGatewayRequest {
+                model_name: session.current_model.clone(),
+                prompt: prompt_snapshot.clone(),
+                messages: gateway_messages.clone(),
+                tools: tool_dispatcher.registry().to_gateway_tools(),
+                max_tokens: 4_096,
+            }) {
+                Ok(ModelGatewayResponse::FinalText { content }) => {
+                    self.publish_event(EventEnvelope::new(
+                        EventType::AssistantOutputDelta,
+                        &request.session_id,
+                        Some(&request.agent_id),
+                        Some(&round_id),
+                        serde_json::json!({ "delta": content.clone() }),
+                    ));
+                    message_repository.create_runtime_message(
                         &request.session_id,
                         &request.agent_id,
                         &round_id,
-                        arguments,
-                    ),
-                    parse_session_approval_mode(&session.session_approval_mode),
-                );
-                tool_responses.push(tool_response.clone());
-                self.publish_event(EventEnvelope::new(
-                    EventType::ToolFinished,
-                    &request.session_id,
-                    Some(&request.agent_id),
-                    Some(&round_id),
-                    serde_json::json!({
-                        "tool_name": tool_response.tool_name.clone(),
-                        "status": format!("{:?}", tool_response.status)
-                    }),
-                ));
-
-                let raw_tool_content = if tool_response.status == ToolExecutionStatus::Success {
-                    serde_json::to_string_pretty(&tool_response.result_payload)
-                        .unwrap_or_else(|_| "工具结果序列化失败。".to_string())
-                } else {
-                    tool_response
-                        .message
-                        .clone()
-                        .unwrap_or_else(|| "工具执行失败。".to_string())
-                };
-                let long_result_budget =
-                    context_manager.handle_long_result(LongResultBudgetInput {
-                        content: raw_tool_content,
-                        is_failure: tool_response.status != ToolExecutionStatus::Success,
-                        context_tokens_before_result: context_manager
-                            .estimate_tokens(&prompt_snapshot),
-                        max_context: session.context_limit as u32,
-                        tool_tokens: 0,
-                        skill_tokens: 0,
-                        expected_output_tokens: 4_096,
-                        model_name: session.current_model.clone(),
-                        summary_agent_available: false,
-                    });
-                let mut second_compression_summary = None;
-                if long_result_budget.strategy == LongResultStrategy::DirectAfterCompression {
-                    let compression = context_manager.compress_session_context(
-                        &request.session_id,
-                        &request.agent_id,
-                        context_manager.estimate_tokens(&prompt_snapshot),
-                        CompressionReason::OverLimit,
+                        "assistant",
+                        &content,
+                        "plain",
+                        true,
                     )?;
-                    second_compression_summary = Some(compression.summary_text);
+                    self.publish_event(EventEnvelope::new(
+                        EventType::AssistantOutputCompleted,
+                        &request.session_id,
+                        Some(&request.agent_id),
+                        Some(&round_id),
+                        serde_json::json!({ "content": content.clone() }),
+                    ));
+                    let tool_success_count = tool_responses
+                        .iter()
+                        .filter(|response| response.status == ToolExecutionStatus::Success)
+                        .count() as i64;
+                    let tool_failure_count = tool_responses
+                        .iter()
+                        .filter(|response| response.status != ToolExecutionStatus::Success)
+                        .count() as i64;
+                    let _ = MetricsCollector::new(self.database)
+                        .with_event_bus(
+                            self.event_bus
+                                .clone()
+                                .unwrap_or_else(|| EventBus::new(self.database)),
+                        )
+                        .record_snapshot(SessionMetricInput {
+                            session_id: request.session_id.clone(),
+                            agent_id: Some(request.agent_id.clone()),
+                            input_tokens: context_manager.estimate_tokens(&prompt_snapshot) as i64,
+                            output_tokens: context_manager.estimate_tokens(&content) as i64,
+                            cache_hit_rate: 0.0,
+                            remaining_context: (session.context_limit
+                                - context_manager.estimate_tokens(&prompt_snapshot) as i64
+                                - 4_096)
+                                .max(0),
+                            tool_success_count,
+                            tool_failure_count,
+                            active_tool_calls: 0,
+                        });
+                    state_history.push("Completed".to_string());
+                    return Ok(AgentRoundOutcome {
+                        status: AgentRoundStatus::Completed,
+                        final_text: Some(content),
+                        state_history,
+                        tool_responses,
+                        prompt_snapshot,
+                        warnings,
+                    });
                 }
-                let tool_content = long_result_budget.content;
-                message_repository.create_runtime_message(
-                    &request.session_id,
-                    &request.agent_id,
-                    &round_id,
-                    "tool",
-                    &tool_content,
-                    "plain",
-                    true,
-                )?;
-
-                state_history.push("ApplyingResult".to_string());
-                current_messages = message_repository.list_by_session_id(&request.session_id)?;
-                let second_assembly = prompt_assembler
-                    .assemble(
-                        tool_dispatcher.registry(),
-                        PromptAssemblyInput {
-                            messages: &current_messages,
-                            current_user_input: "",
-                            compression_summary: second_compression_summary.as_deref(),
-                            context_limit: session.context_limit as u32,
-                            expected_output_tokens: 4_096,
-                        },
-                    )
-                    .map_err(AgentRunnerError::ModelRequestFailed)?;
-                warnings.extend(second_assembly.warnings);
-
-                state_history.push("CallingModel".to_string());
-                self.publish_event(EventEnvelope::new(
-                    EventType::ModelThinkingStarted,
-                    &request.session_id,
-                    Some(&request.agent_id),
-                    Some(&round_id),
-                    serde_json::json!({ "stage": "after_tool_call" }),
-                ));
-                match self.gateway.complete(ModelGatewayRequest {
-                    model_name: session.current_model.clone(),
-                    prompt: second_assembly.prompt,
-                }) {
-                    Ok(ModelGatewayResponse::FinalText { content }) => {
-                        self.publish_event(EventEnvelope::new(
-                            EventType::AssistantOutputDelta,
-                            &request.session_id,
-                            Some(&request.agent_id),
-                            Some(&round_id),
-                            serde_json::json!({ "delta": content.clone() }),
-                        ));
-                        message_repository.create_runtime_message(
+                Ok(ModelGatewayResponse::ToolCall {
+                    tool_name,
+                    arguments,
+                    tool_call_id,
+                    assistant_content,
+                }) => {
+                    state_history.push("DispatchingTool".to_string());
+                    self.publish_event(EventEnvelope::new(
+                        EventType::ToolStarted,
+                        &request.session_id,
+                        Some(&request.agent_id),
+                        Some(&round_id),
+                        serde_json::json!({ "tool_name": tool_name.clone() }),
+                    ));
+                    let tool_arguments = arguments.clone();
+                    let tool_response = tool_dispatcher.execute(
+                        ToolCallRequest::new(
+                            &tool_name,
                             &request.session_id,
                             &request.agent_id,
                             &round_id,
-                            "assistant",
-                            &content,
-                            "plain",
-                            true,
-                        )?;
-                        self.publish_event(EventEnvelope::new(
-                            EventType::AssistantOutputCompleted,
+                            arguments,
+                        ),
+                        parse_session_approval_mode(&session.session_approval_mode),
+                    );
+                    tool_responses.push(tool_response.clone());
+                    self.publish_event(EventEnvelope::new(
+                        EventType::ToolFinished,
+                        &request.session_id,
+                        Some(&request.agent_id),
+                        Some(&round_id),
+                        serde_json::json!({
+                            "tool_name": tool_response.tool_name.clone(),
+                            "status": format!("{:?}", tool_response.status)
+                        }),
+                    ));
+
+                    let raw_tool_content = if tool_response.status == ToolExecutionStatus::Success {
+                        serde_json::to_string_pretty(&tool_response.result_payload)
+                            .unwrap_or_else(|_| "工具结果序列化失败。".to_string())
+                    } else {
+                        tool_response
+                            .message
+                            .clone()
+                            .unwrap_or_else(|| "工具执行失败。".to_string())
+                    };
+                    let long_result_budget =
+                        context_manager.handle_long_result(LongResultBudgetInput {
+                            content: raw_tool_content,
+                            is_failure: tool_response.status != ToolExecutionStatus::Success,
+                            context_tokens_before_result: context_manager
+                                .estimate_tokens(&prompt_snapshot),
+                            max_context: session.context_limit as u32,
+                            tool_tokens: 0,
+                            skill_tokens: 0,
+                            expected_output_tokens: 4_096,
+                            model_name: session.current_model.clone(),
+                            summary_agent_available: false,
+                        });
+                    let mut second_compression_summary = None;
+                    if long_result_budget.strategy == LongResultStrategy::DirectAfterCompression {
+                        let compression = context_manager.compress_session_context(
                             &request.session_id,
-                            Some(&request.agent_id),
-                            Some(&round_id),
-                            serde_json::json!({ "content": content.clone() }),
-                        ));
-                        let tool_success_count = tool_responses
-                            .iter()
-                            .filter(|response| response.status == ToolExecutionStatus::Success)
-                            .count() as i64;
-                        let tool_failure_count = tool_responses
-                            .iter()
-                            .filter(|response| response.status != ToolExecutionStatus::Success)
-                            .count() as i64;
-                        let _ = MetricsCollector::new(self.database)
-                            .with_event_bus(
-                                self.event_bus
-                                    .clone()
-                                    .unwrap_or_else(|| EventBus::new(self.database)),
-                            )
-                            .record_snapshot(SessionMetricInput {
-                                session_id: request.session_id.clone(),
-                                agent_id: Some(request.agent_id.clone()),
-                                input_tokens: context_manager.estimate_tokens(&prompt_snapshot)
-                                    as i64,
-                                output_tokens: context_manager.estimate_tokens(&content) as i64,
-                                cache_hit_rate: 0.0,
-                                remaining_context: (session.context_limit
-                                    - context_manager.estimate_tokens(&prompt_snapshot) as i64
-                                    - 4_096)
-                                    .max(0),
-                                tool_success_count,
-                                tool_failure_count,
-                                active_tool_calls: 0,
-                            });
-                        state_history.push("Completed".to_string());
-                        Ok(AgentRoundOutcome {
-                            status: AgentRoundStatus::Completed,
-                            final_text: Some(content),
-                            state_history,
-                            tool_responses,
-                            prompt_snapshot,
-                            warnings,
-                        })
+                            &request.agent_id,
+                            context_manager.estimate_tokens(&prompt_snapshot),
+                            CompressionReason::OverLimit,
+                        )?;
+                        second_compression_summary = Some(compression.summary_text);
                     }
-                    Ok(ModelGatewayResponse::ToolCall { .. }) => {
-                        Err(AgentRunnerError::ModelRequestFailed(
-                            "当前阶段单轮执行器暂不支持连续多次工具调用。".to_string(),
-                        ))
+                    let tool_content = long_result_budget.content;
+                    message_repository.create_runtime_message(
+                        &request.session_id,
+                        &request.agent_id,
+                        &round_id,
+                        "tool",
+                        &tool_content,
+                        "plain",
+                        true,
+                    )?;
+
+                    state_history.push("ApplyingResult".to_string());
+                    if let Some(summary) = second_compression_summary.as_deref() {
+                        gateway_messages.push(serde_json::json!({
+                            "role": "system",
+                            "content": summary
+                        }));
                     }
-                    Err(error) => Err(AgentRunnerError::ModelRequestFailed(error.to_string())),
+                    gateway_messages.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": assistant_content,
+                        "tool_calls": [{
+                            "id": tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": serde_json::to_string(&tool_arguments).unwrap_or_else(|_| "{}".to_string())
+                            }
+                        }]
+                    }));
+                    gateway_messages.push(serde_json::json!({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": tool_content
+                    }));
                 }
+                Err(error) => return Err(AgentRunnerError::ModelRequestFailed(error.to_string())),
             }
-            Err(error) => Err(AgentRunnerError::ModelRequestFailed(error.to_string())),
         }
     }
 
