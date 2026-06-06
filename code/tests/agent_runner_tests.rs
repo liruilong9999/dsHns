@@ -192,7 +192,11 @@ fn 应支持一轮输入到工具执行再到最终输出() {
         outcome
             .tool_responses
             .iter()
-            .map(|item| (item.tool_name.clone(), item.error_code.clone(), item.message.clone()))
+            .map(|item| (
+                item.tool_name.clone(),
+                item.error_code.clone(),
+                item.message.clone()
+            ))
             .collect::<Vec<_>>()
     );
     assert_eq!(

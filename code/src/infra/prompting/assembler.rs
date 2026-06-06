@@ -1,9 +1,11 @@
 //! 提示词装配器实现。
 //!
-//! 本模块负责读取 `AGENTS.md`、技能元信息与会话消息，并按文档顺序拼接提示词。
+//! 该模块负责读取 `AGENTS.md`、技能元信息与会话消息，并按照文档约定的顺序
+//! 装配最终提示词与网关消息列表。
 
 use crate::domain::tool::ToolMetadata;
 use crate::domain::workspace_session::MessageRecord;
+use crate::infra::skills::{SkillCatalog, SkillMetadata};
 use crate::infra::tool_system::ToolRegistry;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -76,12 +78,11 @@ impl PromptAssembler {
 
         if let Some(global_path) = &self.config.global_agents_path {
             match fs::read_to_string(global_path) {
-                Ok(content) => {
-                    if !content.trim().is_empty() {
-                        sections.push(content);
-                        system_sections.push(sections.last().cloned().unwrap_or_default());
-                    }
+                Ok(content) if !content.trim().is_empty() => {
+                    sections.push(content.clone());
+                    system_sections.push(content);
                 }
+                Ok(_) => {}
                 Err(error) => warnings.push(format!(
                     "全局 AGENTS.md 读取失败，已跳过：{}，原因：{error}",
                     global_path.display()
@@ -91,12 +92,11 @@ impl PromptAssembler {
 
         let workspace_agents_path = self.config.workspace_root_path.join("AGENTS.md");
         match fs::read_to_string(&workspace_agents_path) {
-            Ok(content) => {
-                if !content.trim().is_empty() {
-                    sections.push(content);
-                    system_sections.push(sections.last().cloned().unwrap_or_default());
-                }
+            Ok(content) if !content.trim().is_empty() => {
+                sections.push(content.clone());
+                system_sections.push(content);
             }
+            Ok(_) => {}
             Err(error) => warnings.push(format!(
                 "工作区 AGENTS.md 读取失败，已跳过：{}，原因：{error}",
                 workspace_agents_path.display()
@@ -111,15 +111,16 @@ impl PromptAssembler {
         let skill_metadata_summary =
             load_skill_metadata_summary(&self.config.skill_root_path, &mut warnings);
         if !skill_metadata_summary.is_empty() {
-            sections.push(skill_metadata_summary);
-            system_sections.push(sections.last().cloned().unwrap_or_default());
+            sections.push(skill_metadata_summary.clone());
+            system_sections.push(skill_metadata_summary);
         }
 
-        if let Some(summary) = input.compression_summary {
-            if !summary.trim().is_empty() {
-                sections.push(summary.to_string());
-                system_sections.push(sections.last().cloned().unwrap_or_default());
-            }
+        if let Some(summary) = input
+            .compression_summary
+            .filter(|value| !value.trim().is_empty())
+        {
+            sections.push(summary.to_string());
+            system_sections.push(summary.to_string());
         }
 
         if !system_sections.is_empty() {
@@ -186,7 +187,8 @@ impl PromptAssembler {
 
 /// 读取技能元信息摘要，并在失败时写入中文告警。
 fn load_skill_metadata_summary(skill_root_path: &Path, warnings: &mut Vec<String>) -> String {
-    if !skill_root_path.exists() {
+    let catalog = SkillCatalog::new(skill_root_path.to_path_buf());
+    if !catalog.exists() {
         warnings.push(format!(
             "Skill 元信息列表读取失败，已跳过：{} 不存在。",
             skill_root_path.display()
@@ -194,8 +196,8 @@ fn load_skill_metadata_summary(skill_root_path: &Path, warnings: &mut Vec<String
         return String::new();
     }
 
-    let skill_files = collect_skill_files(skill_root_path);
-    if skill_files.is_empty() {
+    let metadata_list = catalog.list_metadata();
+    if metadata_list.is_empty() {
         warnings.push(format!(
             "Skill 元信息列表读取失败，已跳过：{} 下未找到 SKILL.md。",
             skill_root_path.display()
@@ -203,52 +205,28 @@ fn load_skill_metadata_summary(skill_root_path: &Path, warnings: &mut Vec<String
         return String::new();
     }
 
-    format_skill_metadata_summary(skill_files)
+    format_skill_metadata_summary(metadata_list)
 }
 
-/// 不产生日志告警地读取技能元信息摘要。
+/// 无告警地读取技能元信息摘要。
 fn load_skill_metadata_summary_no_warning(skill_root_path: &Path) -> String {
-    if !skill_root_path.exists() {
+    let catalog = SkillCatalog::new(skill_root_path.to_path_buf());
+    if !catalog.exists() {
         return String::new();
     }
 
-    let skill_files = collect_skill_files(skill_root_path);
-    if skill_files.is_empty() {
+    let metadata_list = catalog.list_metadata();
+    if metadata_list.is_empty() {
         return String::new();
     }
 
-    format_skill_metadata_summary(skill_files)
+    format_skill_metadata_summary(metadata_list)
 }
 
-/// 收集技能文件列表。
-fn collect_skill_files(root: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    collect_skill_files_recursive(root, &mut files);
-    files.sort();
-    files
-}
-
-/// 递归收集技能文件。
-fn collect_skill_files_recursive(root: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_skill_files_recursive(&path, files);
-        } else if path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md") {
-            files.push(path);
-        }
-    }
-}
-
-/// 把技能文件列表转换成元信息摘要。
-fn format_skill_metadata_summary(skill_files: Vec<PathBuf>) -> String {
-    let lines = skill_files
+/// 把技能列表转换为元信息摘要。
+fn format_skill_metadata_summary(metadata_list: Vec<SkillMetadata>) -> String {
+    let lines = metadata_list
         .into_iter()
-        .filter_map(|path| parse_skill_metadata(&path))
         .map(|metadata| format!("{}：{}", metadata.name, metadata.description))
         .collect::<Vec<_>>();
 
@@ -257,41 +235,6 @@ fn format_skill_metadata_summary(skill_files: Vec<PathBuf>) -> String {
     } else {
         format!("[Skill 列表]\n{}", lines.join("\n"))
     }
-}
-
-/// 技能元信息。
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SkillMetadataSummary {
-    /// 技能名。
-    name: String,
-    /// 技能描述。
-    description: String,
-}
-
-/// 解析技能元信息。
-fn parse_skill_metadata(path: &Path) -> Option<SkillMetadataSummary> {
-    let content = fs::read_to_string(path).ok()?;
-    let mut name = None;
-    let mut description = None;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(value) = trimmed.strip_prefix("name:") {
-            name = Some(value.trim().to_string());
-        }
-        if let Some(value) = trimmed.strip_prefix("description:") {
-            description = Some(value.trim().to_string());
-        }
-    }
-
-    Some(SkillMetadataSummary {
-        name: name.unwrap_or_else(|| {
-            path.parent()
-                .and_then(|parent| parent.file_name())
-                .map(|value| value.to_string_lossy().to_string())
-                .unwrap_or_else(|| "unknown-skill".to_string())
-        }),
-        description: description.unwrap_or_else(|| "无描述".to_string()),
-    })
 }
 
 /// 估算工具元信息的 `Token` 数。

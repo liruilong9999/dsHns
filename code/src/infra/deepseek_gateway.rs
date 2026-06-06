@@ -68,7 +68,9 @@ impl ModelGatewayTrait for DeepSeekGateway {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body_text = response.text().unwrap_or_else(|_| "读取错误响应失败".to_string());
+            let body_text = response
+                .text()
+                .unwrap_or_else(|_| "读取错误响应失败".to_string());
             return Err(ModelGatewayError::RequestFailed(format!(
                 "DeepSeek 接口返回失败状态：{}，响应：{}",
                 status, body_text
@@ -83,10 +85,15 @@ impl ModelGatewayTrait for DeepSeekGateway {
             ModelGatewayError::RequestFailed("DeepSeek 响应中缺少 choices。".to_string())
         })?;
 
-        if let Some(tool_call) = choice.message.tool_calls.and_then(|mut items| items.drain(..).next()) {
-            let arguments = serde_json::from_str::<Value>(&tool_call.function.arguments).map_err(|error| {
-                ModelGatewayError::RequestFailed(format!("解析工具调用参数失败：{error}"))
-            })?;
+        if let Some(tool_call) = choice
+            .message
+            .tool_calls
+            .and_then(|mut items| items.drain(..).next())
+        {
+            let arguments =
+                serde_json::from_str::<Value>(&tool_call.function.arguments).map_err(|error| {
+                    ModelGatewayError::RequestFailed(format!("解析工具调用参数失败：{error}"))
+                })?;
             return Ok(ModelGatewayResponse::ToolCall {
                 tool_name: tool_call.function.name,
                 arguments,

@@ -9,6 +9,7 @@ use crate::domain::tool::{
 use crate::infra::agent_management::{
     ChildAgentDispatchRequest, ChildAgentManager, ChildAgentMode, CreateChildAgentRequest,
 };
+use crate::infra::skills::SkillCatalog;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -531,7 +532,8 @@ impl<'a> ToolDispatcher<'a> {
         metadata: &ToolMetadata,
     ) -> ToolResponse {
         let skill_name = request.arguments["name"].as_str().unwrap_or_default();
-        match find_skill_file(&self.runtime_config.skill_root_path, skill_name) {
+        let skill_catalog = SkillCatalog::new(self.runtime_config.skill_root_path.clone());
+        match skill_catalog.find_skill_file(skill_name) {
             Some(path) => match fs::read_to_string(&path) {
                 Ok(content) => ToolResponse::success(
                     request,
@@ -965,6 +967,7 @@ fn write_file_replace_range(
 }
 
 /// 查找技能文件。
+#[allow(dead_code)]
 fn find_skill_file(skill_root_path: &Path, skill_name: &str) -> Option<PathBuf> {
     let direct_path = skill_root_path.join(skill_name).join("SKILL.md");
     if direct_path.exists() {
@@ -975,6 +978,7 @@ fn find_skill_file(skill_root_path: &Path, skill_name: &str) -> Option<PathBuf> 
 }
 
 /// 递归查找技能目录。
+#[allow(dead_code)]
 fn recursive_find_skill(root: &Path, skill_name: &str) -> Option<PathBuf> {
     let entries = fs::read_dir(root).ok()?;
     for entry in entries.flatten() {

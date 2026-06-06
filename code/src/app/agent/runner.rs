@@ -2,7 +2,9 @@
 //!
 //! 本模块实现提示词装配、模型调用、工具执行和最终输出回写的单轮状态机。
 
-use crate::domain::tool::{SessionApprovalMode, ToolCallRequest, ToolExecutionStatus, ToolResponse};
+use crate::domain::tool::{
+    SessionApprovalMode, ToolCallRequest, ToolExecutionStatus, ToolResponse,
+};
 use crate::infra::config::{AppConfig, ModelGatewayAvailability};
 use crate::infra::context_management::{
     CompressionReason, ContextManager, ContextManagerConfig, LongResultBudgetInput,
@@ -324,7 +326,10 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
             }
             (recomposed.prompt, recomposed.gateway_messages)
         } else {
-            (first_assembly.prompt, first_assembly.gateway_messages.clone())
+            (
+                first_assembly.prompt,
+                first_assembly.gateway_messages.clone(),
+            )
         };
 
         let mut gateway_messages = first_gateway_messages.clone();
@@ -457,9 +462,9 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                             &round_id,
                             arguments,
                         ),
-                        request
-                            .approval_mode_override
-                            .unwrap_or_else(|| parse_session_approval_mode(&session.session_approval_mode)),
+                        request.approval_mode_override.unwrap_or_else(|| {
+                            parse_session_approval_mode(&session.session_approval_mode)
+                        }),
                     );
                     tool_responses.push(tool_response.clone());
                     self.publish_event(EventEnvelope::new(

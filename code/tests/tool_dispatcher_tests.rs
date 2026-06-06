@@ -373,6 +373,43 @@ fn 应执行审批矩阵熔断与总次数限制() {
 }
 
 /// 断言工具执行成功。
+#[test]
+fn load_skill_should_support_display_name_lookup() {
+    let workspace_root = create_temp_directory("tool-skill-name-workspace");
+    let skill_root = create_skill_root("tool-skill-name-skills");
+    create_skill(
+        skill_root.as_path(),
+        "demo_skill_directory",
+        "---\nname: demo-skill-display\ndescription: 演示技能\n---\n\n# Demo Skill\n\n这是一个测试技能。",
+    );
+    let mut dispatcher = ToolDispatcher::new(ToolRuntimeConfig::new(workspace_root, skill_root));
+
+    let response = dispatcher.execute(
+        ToolCallRequest::new(
+            "load_skill",
+            "SES-0001",
+            "AGT-0001",
+            "ROUND-0300",
+            json!({
+                "name": "demo-skill-display"
+            }),
+        ),
+        SessionApprovalMode::Auto,
+    );
+
+    assert_success(&response, "load_skill");
+    assert_eq!(
+        response.result_payload["name"].as_str(),
+        Some("demo-skill-display")
+    );
+    assert!(
+        response.result_payload["content"]
+            .as_str()
+            .expect("缺少技能内容")
+            .contains("这是一个测试技能")
+    );
+}
+
 fn assert_success(response: &dshns_agent::domain::tool::ToolResponse, expected_tool_name: &str) {
     assert_eq!(response.status, ToolExecutionStatus::Success);
     assert_eq!(response.tool_name, expected_tool_name);

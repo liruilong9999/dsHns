@@ -3,15 +3,15 @@
 //! 当前阶段提供基础 CLI 主循环，后续再接入更完整的模型与工具链路。
 
 use dshns_agent::app::agent_runner::{AgentRoundRequest, AgentRunner, AgentRunnerConfig};
-use dshns_agent::app::cli::{CliApplication, CliResponse, CliDisplayState};
+use dshns_agent::app::cli::{CliApplication, CliDisplayState, CliResponse};
+use dshns_agent::app::workspace_session_service::{
+    ChangeSessionApprovalModeRequest, WorkspaceSessionService,
+};
 use dshns_agent::infra::config::AppConfig;
 use dshns_agent::infra::db::{DatabaseTarget, SqliteDatabase};
 use dshns_agent::infra::deepseek_gateway::DeepSeekGateway;
 use dshns_agent::infra::event_bus::EventBus;
 use dshns_agent::infra::metrics::SessionMetricsRepository;
-use dshns_agent::app::workspace_session_service::{
-    ChangeSessionApprovalModeRequest, WorkspaceSessionService,
-};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
@@ -71,12 +71,14 @@ fn run_cli() -> Result<(), String> {
         let is_command = line.trim().starts_with('/');
         if matches!(line.trim(), "执行" | "确认执行" | "confirm" | "approve") {
             let approval = pending_approval.clone().or_else(|| {
-                last_plain_input.clone().map(|(session_id, original_input, previous_mode, round_id)| PendingApproval {
-                    session_id,
-                    original_input,
-                    previous_mode,
-                    round_id,
-                })
+                last_plain_input.clone().map(
+                    |(session_id, original_input, previous_mode, round_id)| PendingApproval {
+                        session_id,
+                        original_input,
+                        previous_mode,
+                        round_id,
+                    },
+                )
             });
             if let Some(pending) = approval {
                 workspace_service
@@ -100,7 +102,9 @@ fn run_cli() -> Result<(), String> {
                             user_input: pending.original_input.clone(),
                             input_already_persisted: true,
                             existing_round_id: Some(pending.round_id.clone()),
-                            approval_mode_override: Some(dshns_agent::domain::tool::SessionApprovalMode::Auto),
+                            approval_mode_override: Some(
+                                dshns_agent::domain::tool::SessionApprovalMode::Auto,
+                            ),
                         })
                         .map_err(|error| format!("审批后执行失败：{error}"))?;
                     workspace_service
@@ -125,8 +129,12 @@ fn run_cli() -> Result<(), String> {
         match cli.handle_input(&line) {
             Ok(response) => {
                 if is_command {
-                    writeln!(stdout, "{}", colorize(&render_response(&response), CliDisplayState::Answer))
-                        .map_err(|error| format!("输出响应失败：{error}"))?;
+                    writeln!(
+                        stdout,
+                        "{}",
+                        colorize(&render_response(&response), CliDisplayState::Answer)
+                    )
+                    .map_err(|error| format!("输出响应失败：{error}"))?;
                     print_status_line(&database, &cli, &mut stdout)?;
                     stdout
                         .flush()
@@ -145,7 +153,12 @@ fn run_cli() -> Result<(), String> {
                         .get_session(&session_id)
                         .map_err(|error| format!("读取会话审批模式失败：{error}"))?
                         .session_approval_mode;
-                    last_plain_input = Some((session_id.clone(), line.clone(), previous_mode, round_id.clone()));
+                    last_plain_input = Some((
+                        session_id.clone(),
+                        line.clone(),
+                        previous_mode,
+                        round_id.clone(),
+                    ));
                     event_bus
                         .register_session(&session_id)
                         .map_err(|error| format!("注册会话事件队列失败：{error}"))?;
@@ -191,7 +204,13 @@ fn run_cli() -> Result<(), String> {
                                 )
                                 .map_err(|error| format!("输出审批提示失败：{error}"))?;
                             }
-                            render_round_outcome(&database, &event_bus, &session_id, outcome, &mut stdout)?;
+                            render_round_outcome(
+                                &database,
+                                &event_bus,
+                                &session_id,
+                                outcome,
+                                &mut stdout,
+                            )?;
                         }
                         None => {
                             writeln!(
@@ -279,7 +298,10 @@ fn render_event(event_type: &str, payload: &serde_json::Value) -> (CliDisplaySta
             if let Some(reasoning) = payload["reasoning_content"].as_str() {
                 format!("{} {}", CliDisplayState::Thinking.prefix_label(), reasoning)
             } else {
-                format!("{} 模型正在思考。", CliDisplayState::Thinking.prefix_label())
+                format!(
+                    "{} 模型正在思考。",
+                    CliDisplayState::Thinking.prefix_label()
+                )
             },
         ),
         "tool_started" => (
@@ -339,10 +361,7 @@ fn render_event(event_type: &str, payload: &serde_json::Value) -> (CliDisplaySta
             CliDisplayState::Answer,
             "[指标] 会话指标已刷新。".to_string(),
         ),
-        _ => (
-            CliDisplayState::Answer,
-            format!("[事件] {}", event_type),
-        ),
+        _ => (CliDisplayState::Answer, format!("[事件] {}", event_type)),
     }
 }
 
@@ -369,7 +388,9 @@ struct PendingApproval {
 fn print_startup_banner() {
     println!("DeepSeek 专属 Agent CLI 启动中，输入 /quit 可退出。");
     println!("可用命令：/models  /model check <模型名>  /mode  /sessions  /quit");
-    println!("操作建议：先输入普通文本创建会话；若处于 ask 模式，工具审批后可输入“执行”或“确认执行”继续。");
+    println!(
+        "操作建议：先输入普通文本创建会话；若处于 ask 模式，工具审批后可输入“执行”或“确认执行”继续。"
+    );
 }
 
 fn render_prompt(stdout: &mut io::Stdout, cli: &CliApplication<'_>) -> Result<(), String> {
@@ -378,8 +399,11 @@ fn render_prompt(stdout: &mut io::Stdout, cli: &CliApplication<'_>) -> Result<()
         .current_approval_mode()
         .map_err(|error| format!("读取当前审批模式失败：{error}"))?
         .unwrap_or_else(|| "ask".to_string());
-    write!(stdout, "[{}|mode={}] > ", session, mode).map_err(|error| format!("输出提示符失败：{error}"))?;
-    stdout.flush().map_err(|error| format!("刷新提示符失败：{error}"))?;
+    write!(stdout, "[{}|mode={}] > ", session, mode)
+        .map_err(|error| format!("输出提示符失败：{error}"))?;
+    stdout
+        .flush()
+        .map_err(|error| format!("刷新提示符失败：{error}"))?;
     Ok(())
 }
 
@@ -443,15 +467,22 @@ fn render_round_outcome(
     {
         let (state, text) = render_event(&event.event_type, &event.payload);
         if state == CliDisplayState::Thinking && event.payload["reasoning_content"].is_string() {
-            let prefix = colorize(CliDisplayState::Thinking.prefix_label(), CliDisplayState::Thinking);
+            let prefix = colorize(
+                CliDisplayState::Thinking.prefix_label(),
+                CliDisplayState::Thinking,
+            );
             write!(stdout, "{} ", prefix).map_err(|error| format!("输出思考前缀失败：{error}"))?;
             for ch in event.payload["reasoning_content"]
                 .as_str()
                 .unwrap_or_default()
                 .chars()
             {
-                write!(stdout, "{}", colorize(&ch.to_string(), CliDisplayState::Thinking))
-                    .map_err(|error| format!("输出思考内容失败：{error}"))?;
+                write!(
+                    stdout,
+                    "{}",
+                    colorize(&ch.to_string(), CliDisplayState::Thinking)
+                )
+                .map_err(|error| format!("输出思考内容失败：{error}"))?;
             }
             writeln!(stdout).map_err(|error| format!("输出思考换行失败：{error}"))?;
         } else {
@@ -460,7 +491,10 @@ fn render_round_outcome(
         }
     }
     if let Some(final_text) = outcome.final_text {
-        let prefix = colorize(CliDisplayState::Answer.prefix_label(), CliDisplayState::Answer);
+        let prefix = colorize(
+            CliDisplayState::Answer.prefix_label(),
+            CliDisplayState::Answer,
+        );
         write!(stdout, "{} ", prefix).map_err(|error| format!("输出回答前缀失败：{error}"))?;
         for ch in final_text.chars() {
             write!(stdout, "{}", ch).map_err(|error| format!("流式输出回答失败：{error}"))?;
@@ -468,6 +502,8 @@ fn render_round_outcome(
         writeln!(stdout).map_err(|error| format!("输出换行失败：{error}"))?;
     }
     print_status_line_for_session(database, session_id, stdout)?;
-    stdout.flush().map_err(|error| format!("刷新输出失败：{error}"))?;
+    stdout
+        .flush()
+        .map_err(|error| format!("刷新输出失败：{error}"))?;
     Ok(())
 }
