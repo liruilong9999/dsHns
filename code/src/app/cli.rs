@@ -343,4 +343,26 @@ impl<'a> CliApplication<'a> {
             CliError::ValidationFailed("当前没有活跃会话，请先输入普通文本创建会话。".to_string())
         })
     }
+
+    /// 返回当前活跃会话标识。
+    pub fn current_session_id(&self) -> Option<&str> {
+        self.active_session_id.as_deref()
+    }
+
+    /// 返回当前活跃工作区标识。
+    pub fn current_workspace_id(&self) -> Option<&str> {
+        self.active_workspace_id.as_deref()
+    }
+
+    /// 返回当前活跃会话的审批模式。
+    pub fn current_approval_mode(&self) -> Result<Option<String>, CliError> {
+        let Some(session_id) = self.active_session_id.as_deref() else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.workspace_session_service
+                .get_session(session_id)?
+                .session_approval_mode,
+        ))
+    }
 }
