@@ -204,9 +204,11 @@ fn 单轮执行器应发出模型思考增量和最终输出事件() {
             }),
             tool_call_id: "call-event-1".to_string(),
             assistant_content: None,
+            reasoning_content: None,
         },
         ModelGatewayResponse::FinalText {
             content: "事件驱动链路完成。".to_string(),
+            reasoning_content: None,
         },
     ]);
     let runner = AgentRunner::new(
@@ -224,6 +226,7 @@ fn 单轮执行器应发出模型思考增量和最终输出事件() {
             user_input: "请读取文件并输出".to_string(),
             input_already_persisted: false,
             existing_round_id: None,
+            approval_mode_override: Some(dshns_agent::domain::tool::SessionApprovalMode::Auto),
         })
         .expect("执行单轮流程失败");
 

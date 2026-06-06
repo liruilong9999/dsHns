@@ -2,7 +2,7 @@
 //!
 //! 本模块实现提示词装配、模型调用、工具执行和最终输出回写的单轮状态机。
 
-use crate::domain::tool::{ToolCallRequest, ToolExecutionStatus, ToolResponse};
+use crate::domain::tool::{SessionApprovalMode, ToolCallRequest, ToolExecutionStatus, ToolResponse};
 use crate::infra::config::{AppConfig, ModelGatewayAvailability};
 use crate::infra::context_management::{
     CompressionReason, ContextManager, ContextManagerConfig, LongResultBudgetInput,
@@ -41,6 +41,8 @@ pub enum ModelGatewayResponse {
     FinalText {
         /// 最终回答内容。
         content: String,
+        /// 模型思考内容。
+        reasoning_content: Option<String>,
     },
     /// 模型返回工具调用请求。
     ToolCall {
@@ -52,6 +54,8 @@ pub enum ModelGatewayResponse {
         tool_call_id: String,
         /// 助手在发起工具调用时附带的内容。
         assistant_content: Option<String>,
+        /// 模型思考内容。
+        reasoning_content: Option<String>,
     },
 }
 
@@ -119,6 +123,8 @@ pub struct AgentRoundRequest {
     pub input_already_persisted: bool,
     /// 已存在的轮次标识。
     pub existing_round_id: Option<String>,
+    /// 可选审批模式覆盖，用于本地确认继续执行等场景。
+    pub approval_mode_override: Option<SessionApprovalMode>,
 }
 
 /// 单轮执行状态。
@@ -338,7 +344,22 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                 tools: tool_dispatcher.registry().to_gateway_tools(),
                 max_tokens: 4_096,
             }) {
-                Ok(ModelGatewayResponse::FinalText { content }) => {
+                Ok(ModelGatewayResponse::FinalText {
+                    content,
+                    reasoning_content,
+                }) => {
+                    if let Some(reasoning_content) = reasoning_content {
+                        self.publish_event(EventEnvelope::new(
+                            EventType::ModelThinkingStarted,
+                            &request.session_id,
+                            Some(&request.agent_id),
+                            Some(&round_id),
+                            serde_json::json!({
+                                "stage": "reasoning",
+                                "reasoning_content": reasoning_content
+                            }),
+                        ));
+                    }
                     self.publish_event(EventEnvelope::new(
                         EventType::AssistantOutputDelta,
                         &request.session_id,
@@ -405,7 +426,20 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                     arguments,
                     tool_call_id,
                     assistant_content,
+                    reasoning_content,
                 }) => {
+                    if let Some(reasoning_content) = reasoning_content.clone() {
+                        self.publish_event(EventEnvelope::new(
+                            EventType::ModelThinkingStarted,
+                            &request.session_id,
+                            Some(&request.agent_id),
+                            Some(&round_id),
+                            serde_json::json!({
+                                "stage": "reasoning",
+                                "reasoning_content": reasoning_content
+                            }),
+                        ));
+                    }
                     state_history.push("DispatchingTool".to_string());
                     self.publish_event(EventEnvelope::new(
                         EventType::ToolStarted,
@@ -423,7 +457,9 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                             &round_id,
                             arguments,
                         ),
-                        parse_session_approval_mode(&session.session_approval_mode),
+                        request
+                            .approval_mode_override
+                            .unwrap_or_else(|| parse_session_approval_mode(&session.session_approval_mode)),
                     );
                     tool_responses.push(tool_response.clone());
                     self.publish_event(EventEnvelope::new(
@@ -433,9 +469,23 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                         Some(&round_id),
                         serde_json::json!({
                             "tool_name": tool_response.tool_name.clone(),
-                            "status": format!("{:?}", tool_response.status)
+                            "status": format!("{:?}", tool_response.status),
+                            "error_code": tool_response.error_code.clone(),
+                            "message": tool_response.message.clone()
                         }),
                     ));
+
+                    if tool_response.error_code.as_deref() == Some("APPROVAL_REQUIRED") {
+                        state_history.push("Aborted".to_string());
+                        return Ok(AgentRoundOutcome {
+                            status: AgentRoundStatus::Aborted,
+                            final_text: None,
+                            state_history,
+                            tool_responses,
+                            prompt_snapshot,
+                            warnings,
+                        });
+                    }
 
                     let raw_tool_content = if tool_response.status == ToolExecutionStatus::Success {
                         serde_json::to_string_pretty(&tool_response.result_payload)
@@ -490,6 +540,7 @@ impl<'a, G: ModelGatewayTrait> AgentRunner<'a, G> {
                     gateway_messages.push(serde_json::json!({
                         "role": "assistant",
                         "content": assistant_content,
+                        "reasoning_content": reasoning_content,
                         "tool_calls": [{
                             "id": tool_call_id,
                             "type": "function",

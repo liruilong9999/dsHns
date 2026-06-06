@@ -7,7 +7,8 @@ use dshns_agent::app::agent_runner::{
     ModelGatewayRequest, ModelGatewayResponse, ModelGatewayTrait,
 };
 use dshns_agent::app::workspace_session_service::{
-    CreateSessionRequest, EnsureWorkspaceRequest, WorkspaceSessionService,
+    ChangeSessionApprovalModeRequest, CreateSessionRequest, EnsureWorkspaceRequest,
+    WorkspaceSessionService,
 };
 use dshns_agent::infra::config::{AppConfig, EnvSource};
 use dshns_agent::infra::db::{DatabaseTarget, SqliteDatabase};
@@ -90,9 +91,20 @@ fn api_key_缺失时应阻止模型请求并返回中文错误() {
             first_prompt: "第一句提示词".to_string(),
         })
         .expect("创建会话失败");
+    service
+        .change_session_approval_mode(ChangeSessionApprovalModeRequest {
+            session_id: session.session_id.clone(),
+            session_approval_mode: "auto".to_string(),
+        })
+        .expect("切换审批模式失败");
+    let refreshed = service
+        .get_session(&session.session_id)
+        .expect("重新读取会话失败");
+    assert_eq!(refreshed.session_approval_mode, "auto");
 
     let gateway = ScriptedModelGateway::new(vec![ModelGatewayResponse::FinalText {
         content: "不会被使用".to_string(),
+        reasoning_content: None,
     }]);
     let runner = AgentRunner::new(
         &database,
@@ -108,6 +120,7 @@ fn api_key_缺失时应阻止模型请求并返回中文错误() {
             user_input: "请继续执行".to_string(),
             input_already_persisted: false,
             existing_round_id: None,
+            approval_mode_override: None,
         })
         .expect_err("缺失 API Key 时不应继续执行");
 
@@ -147,9 +160,11 @@ fn 应支持一轮输入到工具执行再到最终输出() {
             }),
             tool_call_id: "call-test-1".to_string(),
             assistant_content: None,
+            reasoning_content: None,
         },
         ModelGatewayResponse::FinalText {
             content: "我已经读取文件并完成总结。".to_string(),
+            reasoning_content: None,
         },
     ]);
     let runner = AgentRunner::new(
@@ -166,10 +181,20 @@ fn 应支持一轮输入到工具执行再到最终输出() {
             user_input: "请读取 demo.txt 并总结".to_string(),
             input_already_persisted: false,
             existing_round_id: None,
+            approval_mode_override: Some(dshns_agent::domain::tool::SessionApprovalMode::Auto),
         })
         .expect("执行单轮主流程失败");
 
-    assert_eq!(outcome.status, AgentRoundStatus::Completed);
+    assert_eq!(
+        outcome.status,
+        AgentRoundStatus::Completed,
+        "工具状态为 {:?}",
+        outcome
+            .tool_responses
+            .iter()
+            .map(|item| (item.tool_name.clone(), item.error_code.clone(), item.message.clone()))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(
         outcome.final_text.as_deref(),
         Some("我已经读取文件并完成总结。")

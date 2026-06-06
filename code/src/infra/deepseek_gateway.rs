@@ -54,9 +54,6 @@ impl ModelGatewayTrait for DeepSeekGateway {
             },
             max_tokens: Some(request.max_tokens),
             stream: Some(false),
-            thinking: Some(DeepSeekThinkingConfig {
-                type_field: "disabled".to_string(),
-            }),
         };
 
         let response = self
@@ -95,11 +92,15 @@ impl ModelGatewayTrait for DeepSeekGateway {
                 arguments,
                 tool_call_id: tool_call.id,
                 assistant_content: choice.message.content,
+                reasoning_content: choice.message.reasoning_content,
             });
         }
 
         if let Some(content) = choice.message.content {
-            return Ok(ModelGatewayResponse::FinalText { content });
+            return Ok(ModelGatewayResponse::FinalText {
+                content,
+                reasoning_content: choice.message.reasoning_content,
+            });
         }
 
         Err(ModelGatewayError::RequestFailed(
@@ -120,8 +121,6 @@ struct DeepSeekChatRequest {
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thinking: Option<DeepSeekThinkingConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,6 +136,7 @@ struct DeepSeekChoice {
 #[derive(Debug, Deserialize)]
 struct DeepSeekMessage {
     content: Option<String>,
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<DeepSeekToolCall>>,
 }
 
@@ -150,10 +150,4 @@ struct DeepSeekToolCall {
 struct DeepSeekToolFunction {
     name: String,
     arguments: String,
-}
-
-#[derive(Debug, Serialize)]
-struct DeepSeekThinkingConfig {
-    #[serde(rename = "type")]
-    type_field: String,
 }

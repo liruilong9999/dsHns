@@ -109,9 +109,11 @@ fn 单轮执行后应写入会话指标快照并发出指标事件() {
             }),
             tool_call_id: "call-metrics-1".to_string(),
             assistant_content: None,
+            reasoning_content: None,
         },
         ModelGatewayResponse::FinalText {
             content: "指标采集完成。".to_string(),
+            reasoning_content: None,
         },
     ]);
 
@@ -130,6 +132,7 @@ fn 单轮执行后应写入会话指标快照并发出指标事件() {
             user_input: "请读取 README 并总结".to_string(),
             input_already_persisted: false,
             existing_round_id: None,
+            approval_mode_override: Some(dshns_agent::domain::tool::SessionApprovalMode::Auto),
         })
         .expect("执行单轮流程失败");
     assert_eq!(outcome.tool_responses.len(), 1);

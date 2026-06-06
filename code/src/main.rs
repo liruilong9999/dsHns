@@ -61,6 +61,7 @@ fn run_cli() -> Result<(), String> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut pending_approval: Option<PendingApproval> = None;
+    let mut last_plain_input: Option<(String, String, String, String)> = None;
     for line_result in stdin.lock().lines() {
         render_prompt(&mut stdout, &cli)?;
         let line = line_result.map_err(|error| format!("读取输入失败：{error}"))?;
@@ -68,8 +69,16 @@ fn run_cli() -> Result<(), String> {
             continue;
         }
         let is_command = line.trim().starts_with('/');
-        if matches!(line.trim(), "执行" | "确认执行") {
-            if let Some(pending) = pending_approval.clone() {
+        if matches!(line.trim(), "执行" | "确认执行" | "confirm" | "approve") {
+            let approval = pending_approval.clone().or_else(|| {
+                last_plain_input.clone().map(|(session_id, original_input, previous_mode, round_id)| PendingApproval {
+                    session_id,
+                    original_input,
+                    previous_mode,
+                    round_id,
+                })
+            });
+            if let Some(pending) = approval {
                 workspace_service
                     .change_session_approval_mode(ChangeSessionApprovalModeRequest {
                         session_id: pending.session_id.clone(),
@@ -89,8 +98,9 @@ fn run_cli() -> Result<(), String> {
                             session_id: pending.session_id.clone(),
                             agent_id: "AGT-0001".to_string(),
                             user_input: pending.original_input.clone(),
-                            input_already_persisted: false,
-                            existing_round_id: None,
+                            input_already_persisted: true,
+                            existing_round_id: Some(pending.round_id.clone()),
+                            approval_mode_override: Some(dshns_agent::domain::tool::SessionApprovalMode::Auto),
                         })
                         .map_err(|error| format!("审批后执行失败：{error}"))?;
                     workspace_service
@@ -131,6 +141,11 @@ fn run_cli() -> Result<(), String> {
                     ..
                 } = response
                 {
+                    let previous_mode = workspace_service
+                        .get_session(&session_id)
+                        .map_err(|error| format!("读取会话审批模式失败：{error}"))?
+                        .session_approval_mode;
+                    last_plain_input = Some((session_id.clone(), line.clone(), previous_mode, round_id.clone()));
                     event_bus
                         .register_session(&session_id)
                         .map_err(|error| format!("注册会话事件队列失败：{error}"))?;
@@ -149,7 +164,8 @@ fn run_cli() -> Result<(), String> {
                                     agent_id: "AGT-0001".to_string(),
                                     user_input: line.clone(),
                                     input_already_persisted: true,
-                                    existing_round_id: Some(round_id),
+                                    existing_round_id: Some(round_id.clone()),
+                                    approval_mode_override: None,
                                 })
                                 .map_err(|error| format!("智能体执行失败：{error}"))?;
                             if outcome.tool_responses.iter().any(|response| {
@@ -163,7 +179,17 @@ fn run_cli() -> Result<(), String> {
                                     session_id: session_id.clone(),
                                     original_input: line.clone(),
                                     previous_mode,
+                                    round_id: round_id.clone(),
                                 });
+                                writeln!(
+                                    stdout,
+                                    "{}",
+                                    colorize(
+                                        "本轮工具调用需要确认，输入“执行”或“确认执行”继续。",
+                                        CliDisplayState::ToolFailure
+                                    )
+                                )
+                                .map_err(|error| format!("输出审批提示失败：{error}"))?;
                             }
                             render_round_outcome(&database, &event_bus, &session_id, outcome, &mut stdout)?;
                         }
@@ -250,7 +276,11 @@ fn render_event(event_type: &str, payload: &serde_json::Value) -> (CliDisplaySta
     match event_type {
         "model_thinking_started" => (
             CliDisplayState::Thinking,
-            format!("{} 模型正在思考。", CliDisplayState::Thinking.prefix_label()),
+            if let Some(reasoning) = payload["reasoning_content"].as_str() {
+                format!("{} {}", CliDisplayState::Thinking.prefix_label(), reasoning)
+            } else {
+                format!("{} 模型正在思考。", CliDisplayState::Thinking.prefix_label())
+            },
         ),
         "tool_started" => (
             CliDisplayState::ToolRunning,
@@ -261,10 +291,22 @@ fn render_event(event_type: &str, payload: &serde_json::Value) -> (CliDisplaySta
             ),
         ),
         "tool_finished" => {
+            let error_code = payload["error_code"].as_str().unwrap_or_default();
+            let message = payload["message"].as_str().unwrap_or_default();
             let is_success = payload["status"]
                 .as_str()
                 .unwrap_or_default()
                 .contains("Success");
+            if error_code == "APPROVAL_REQUIRED" {
+                return (
+                    CliDisplayState::ToolFailure,
+                    format!(
+                        "{} 工具等待确认：{}",
+                        CliDisplayState::ToolFailure.prefix_label(),
+                        payload["tool_name"].as_str().unwrap_or("unknown")
+                    ),
+                );
+            }
             let state = if is_success {
                 CliDisplayState::ToolSuccess
             } else {
@@ -273,10 +315,15 @@ fn render_event(event_type: &str, payload: &serde_json::Value) -> (CliDisplaySta
             (
                 state,
                 format!(
-                    "{} 工具执行{}：{}",
+                    "{} 工具执行{}：{}{}",
                     state.prefix_label(),
                     if is_success { "成功" } else { "失败" },
-                    payload["tool_name"].as_str().unwrap_or("unknown")
+                    payload["tool_name"].as_str().unwrap_or("unknown"),
+                    if !is_success && !message.is_empty() {
+                        format!("，原因：{} ({})", message, error_code)
+                    } else {
+                        String::new()
+                    }
                 ),
             )
         }
@@ -316,6 +363,7 @@ struct PendingApproval {
     session_id: String,
     original_input: String,
     previous_mode: String,
+    round_id: String,
 }
 
 fn print_startup_banner() {
@@ -394,8 +442,22 @@ fn render_round_outcome(
         .map_err(|error| format!("读取事件失败：{error}"))?
     {
         let (state, text) = render_event(&event.event_type, &event.payload);
-        writeln!(stdout, "{}", colorize(&text, state))
-            .map_err(|error| format!("输出事件失败：{error}"))?;
+        if state == CliDisplayState::Thinking && event.payload["reasoning_content"].is_string() {
+            let prefix = colorize(CliDisplayState::Thinking.prefix_label(), CliDisplayState::Thinking);
+            write!(stdout, "{} ", prefix).map_err(|error| format!("输出思考前缀失败：{error}"))?;
+            for ch in event.payload["reasoning_content"]
+                .as_str()
+                .unwrap_or_default()
+                .chars()
+            {
+                write!(stdout, "{}", colorize(&ch.to_string(), CliDisplayState::Thinking))
+                    .map_err(|error| format!("输出思考内容失败：{error}"))?;
+            }
+            writeln!(stdout).map_err(|error| format!("输出思考换行失败：{error}"))?;
+        } else {
+            writeln!(stdout, "{}", colorize(&text, state))
+                .map_err(|error| format!("输出事件失败：{error}"))?;
+        }
     }
     if let Some(final_text) = outcome.final_text {
         let prefix = colorize(CliDisplayState::Answer.prefix_label(), CliDisplayState::Answer);
