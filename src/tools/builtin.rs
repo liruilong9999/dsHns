@@ -1,0 +1,1334 @@
+//! 内置工具实现。
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+
+use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
+use reqwest::Client;
+use reqwest::Url;
+use scraper::{Html, Selector};
+use serde::Deserialize;
+use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
+use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
+use uuid::Uuid;
+
+use crate::agent::manager::SubagentManager;
+use crate::domain::ReplaceRange;
+use crate::mcp::client::McpClientManager;
+use crate::tools::registry::{ToolExecutionContext, ToolHandler};
+use crate::utils::fs::{read_optional_utf8, replace_file_range, write_utf8};
+
+#[derive(Deserialize)]
+struct ReadFileInput {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct WriteFileInput {
+    path: String,
+    content: Option<String>,
+    replace_range: Option<ReplaceRange>,
+}
+
+#[derive(Deserialize)]
+struct RunShellInput {
+    command: String,
+    working_directory: Option<String>,
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct RlmOpenInput {
+    working_directory: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RlmEvalInput {
+    process_id: String,
+    command: String,
+}
+
+#[derive(Deserialize)]
+struct RlmConfigureInput {
+    process_id: String,
+    working_directory: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RlmCloseInput {
+    process_id: String,
+}
+
+#[derive(Deserialize)]
+struct LoadSkillInput {
+    identifier: String,
+}
+
+#[derive(Deserialize)]
+struct ReadToolResultInput {
+    handle: String,
+}
+
+#[derive(Deserialize)]
+struct FetchUrlInput {
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct GithubGetInput {
+    endpoint: String,
+}
+
+#[derive(Deserialize)]
+struct WebSearchInput {
+    query: String,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct WebRunInput {
+    steps: Vec<WebRunStep>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+enum WebRunStep {
+    Open { url: String },
+    Click { text_contains: String },
+    Find { pattern: String },
+    ExtractText { selector: Option<String> },
+}
+
+#[derive(Deserialize)]
+struct ConnectMcpInput {
+    server_id: String,
+}
+
+#[derive(Deserialize)]
+struct CallMcpToolInput {
+    server_id: String,
+    tool_name: String,
+    arguments: Value,
+}
+
+#[derive(Deserialize)]
+struct AgentOpenInput {
+    mode: String,
+    inherit_context: Option<bool>,
+    allowed_paths: Option<Vec<String>>,
+    task_spec: Value,
+    parent_agent_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AgentEvalInput {
+    agent_id: String,
+    input: Value,
+}
+
+#[derive(Deserialize)]
+struct AgentCloseInput {
+    agent_id: String,
+}
+
+#[derive(Deserialize)]
+struct PlanWriteInput {
+    plan_type: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct TaskCreateInput {
+    name: String,
+    command: String,
+    validation_command: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TaskRunInput {
+    task_id: String,
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct AutomationCreateInput {
+    name: String,
+    kind: String,
+    status: String,
+    definition: Value,
+}
+
+#[derive(Deserialize)]
+struct AutomationRunOnceInput {
+    automation_id: String,
+    timeout_ms: Option<u64>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct TaskRecord {
+    id: String,
+    name: String,
+    status: String,
+    command: String,
+    validation_command: Option<String>,
+    bound_process_id: Option<String>,
+    created_at: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct AutomationRecord {
+    id: String,
+    name: String,
+    kind: String,
+    status: String,
+    definition_json: String,
+    last_run_at: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SearchResultItem {
+    title: String,
+    link: String,
+    snippet: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct RlmProcessRecord {
+    id: String,
+    shell_program: String,
+    working_directory: String,
+    status: String,
+    created_at: String,
+    updated_at: String,
+}
+
+struct ManagedRlmProcess {
+    working_directory: PathBuf,
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+#[derive(serde::Serialize)]
+struct WebRunStepResult {
+    step: String,
+    url: String,
+    success: bool,
+    output: String,
+}
+
+/// 读取文件工具。
+pub struct ReadFileTool;
+/// 写入文件工具。
+pub struct WriteFileTool;
+/// Shell 执行工具。
+pub struct RunShellTool;
+/// RLM 打开工具。
+pub struct RlmOpenTool;
+/// RLM 求值工具。
+pub struct RlmEvalTool;
+/// RLM 配置工具。
+pub struct RlmConfigureTool;
+/// RLM 关闭工具。
+pub struct RlmCloseTool;
+/// Skill 加载工具。
+pub struct LoadSkillTool;
+/// 工具结果读取工具。
+pub struct ReadToolResultTool;
+/// URL 抓取工具。
+pub struct FetchUrlTool;
+/// GitHub 只读接口工具。
+pub struct GithubGetTool;
+/// 网络搜索工具。
+pub struct WebSearchTool;
+/// 网页步骤执行工具。
+pub struct WebRunTool;
+/// MCP 发现工具。
+pub struct DiscoverMcpServersTool;
+/// MCP 连接工具。
+pub struct ConnectMcpServerTool;
+/// MCP 调用工具。
+pub struct CallMcpTool;
+/// 子 Agent 创建工具。
+pub struct AgentOpenTool;
+/// 子 Agent 执行工具。
+pub struct AgentEvalTool;
+/// 子 Agent 关闭工具。
+pub struct AgentCloseTool;
+/// 计划写入工具。
+pub struct PlanWriteTool;
+/// 任务创建工具。
+pub struct TaskCreateTool;
+/// 任务执行工具。
+pub struct TaskRunTool;
+/// 自动化创建工具。
+pub struct AutomationCreateTool;
+/// 自动化单次执行工具。
+pub struct AutomationRunOnceTool;
+
+#[async_trait]
+impl ToolHandler for ReadFileTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: ReadFileInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("read_file 参数非法：{}", error))?;
+        let path = resolve_path(&context.workspace_root, &input.path);
+        let content = read_optional_utf8(&path)?
+            .ok_or_else(|| anyhow!("目标文件不存在：{}", path.display()))?;
+        Ok(content)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for WriteFileTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: WriteFileInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("write_file 参数非法：{}", error))?;
+        let path = resolve_path(&context.workspace_root, &input.path);
+
+        if input.content.is_some() && input.replace_range.is_some() {
+            return Err(anyhow!(
+                "write_file 同时提供了 content 与 replace_range，存在冲突，请二选一"
+            ));
+        }
+
+        match (input.content, input.replace_range) {
+            (Some(content), None) => {
+                write_utf8(&path, &content)?;
+                Ok(format!("已写入文件：{}", path.display()))
+            }
+            (None, Some(replace_range)) => {
+                replace_file_range(
+                    &path,
+                    replace_range.start_line,
+                    replace_range.end_line,
+                    &replace_range.new_content,
+                )?;
+                Ok(format!(
+                    "已按行替换文件：{}（{}-{}）",
+                    path.display(),
+                    replace_range.start_line,
+                    replace_range.end_line
+                ))
+            }
+            (None, None) => Err(anyhow!("write_file 缺少 content 或 replace_range")),
+            (Some(_), Some(_)) => unreachable!("前置冲突检查已覆盖该分支"),
+        }
+    }
+}
+
+#[async_trait]
+impl ToolHandler for RunShellTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: RunShellInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("run_shell 参数非法：{}", error))?;
+        let timeout_ms = input.timeout_ms.unwrap_or(10_000);
+        let working_directory = input
+            .working_directory
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+
+        let mut command = Command::new(&context.shell_program);
+        command.kill_on_drop(true);
+        command
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(&input.command)
+            .current_dir(&working_directory)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        let output = timeout(Duration::from_millis(timeout_ms), command.output())
+            .await
+            .map_err(|_| anyhow!("Shell 命令执行超时，{} 毫秒内未完成", timeout_ms))?
+            .with_context(|| format!("执行 Shell 命令失败：{}", input.command))?;
+
+        Ok(render_process_output(
+            &output.stdout,
+            &output.stderr,
+            output.status.code(),
+        ))
+    }
+}
+
+#[async_trait]
+impl ToolHandler for RlmOpenTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: RlmOpenInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("rlm_open 参数非法：{}", error))?;
+        let working_directory = input
+            .working_directory
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+
+        let mut command = Command::new(&context.shell_program);
+        command
+            .arg("-NoProfile")
+            .arg("-NoLogo")
+            .arg("-Command")
+            .arg("-")
+            .current_dir(&working_directory)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command.spawn().context("启动 RLM 进程失败")?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("无法获取 RLM stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("无法获取 RLM stdout"))?;
+        let stdout = BufReader::new(stdout);
+
+        let process_id = Uuid::new_v4().to_string();
+        let process = ManagedRlmProcess {
+            working_directory: working_directory.clone(),
+            child,
+            stdin,
+            stdout,
+        };
+        rlm_registry()
+            .lock()
+            .await
+            .insert(process_id.clone(), process);
+
+        let record = RlmProcessRecord {
+            id: process_id.clone(),
+            shell_program: context.shell_program.clone(),
+            working_directory: working_directory.to_string_lossy().to_string(),
+            status: "open".to_string(),
+            created_at: crate::utils::time::now_rfc3339(),
+            updated_at: crate::utils::time::now_rfc3339(),
+        };
+        persist_rlm_record(&context.session_dir, record)?;
+        Ok(serde_json::json!({
+            "process_id": process_id,
+            "working_directory": working_directory,
+            "status": "open"
+        })
+        .to_string())
+    }
+}
+
+#[async_trait]
+impl ToolHandler for RlmEvalTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: RlmEvalInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("rlm_eval 参数非法：{}", error))?;
+        let sentinel = format!("__DSHNS_RLM_DONE_{}__", Uuid::new_v4());
+        let mut registry = rlm_registry().lock().await;
+        let process = registry
+            .get_mut(&input.process_id)
+            .ok_or_else(|| anyhow!("未找到 RLM 进程：{}", input.process_id))?;
+
+        process
+            .stdin
+            .write_all(format!("{}\nWrite-Output \"{}\"\n", input.command, sentinel).as_bytes())
+            .await
+            .context("写入 RLM 命令失败")?;
+        process.stdin.flush().await.context("刷新 RLM stdin 失败")?;
+
+        let mut output = String::new();
+        loop {
+            let mut line = String::new();
+            let size = process
+                .stdout
+                .read_line(&mut line)
+                .await
+                .context("读取 RLM 输出失败")?;
+            if size == 0 {
+                break;
+            }
+            if line.trim() == sentinel {
+                break;
+            }
+            output.push_str(&line);
+        }
+
+        touch_rlm_record(&context.session_dir, &input.process_id, None, Some("open"))?;
+        Ok(output.trim().to_string())
+    }
+}
+
+#[async_trait]
+impl ToolHandler for RlmConfigureTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: RlmConfigureInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("rlm_configure 参数非法：{}", error))?;
+        let new_directory = input
+            .working_directory
+            .map(|value| resolve_path(&context.workspace_root, &value));
+
+        let mut registry = rlm_registry().lock().await;
+        let process = registry
+            .get_mut(&input.process_id)
+            .ok_or_else(|| anyhow!("未找到 RLM 进程：{}", input.process_id))?;
+
+        if let Some(directory) = new_directory {
+            let command = format!("Set-Location -LiteralPath '{}'", directory.display());
+            process
+                .stdin
+                .write_all(format!("{}\n", command).as_bytes())
+                .await
+                .context("更新 RLM 工作目录失败")?;
+            process.stdin.flush().await.context("刷新 RLM stdin 失败")?;
+            process.working_directory = directory.clone();
+            touch_rlm_record(
+                &context.session_dir,
+                &input.process_id,
+                Some(directory.to_string_lossy().to_string()),
+                Some("open"),
+            )?;
+        }
+
+        Ok(serde_json::json!({
+            "process_id": input.process_id,
+            "status": "open"
+        })
+        .to_string())
+    }
+}
+
+#[async_trait]
+impl ToolHandler for RlmCloseTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: RlmCloseInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("rlm_close 参数非法：{}", error))?;
+        let mut registry = rlm_registry().lock().await;
+        let mut process = registry
+            .remove(&input.process_id)
+            .ok_or_else(|| anyhow!("未找到 RLM 进程：{}", input.process_id))?;
+        process.child.kill().await.context("关闭 RLM 进程失败")?;
+        touch_rlm_record(
+            &context.session_dir,
+            &input.process_id,
+            None,
+            Some("closed"),
+        )?;
+        Ok(serde_json::json!({
+            "process_id": input.process_id,
+            "status": "closed"
+        })
+        .to_string())
+    }
+}
+
+#[async_trait]
+impl ToolHandler for LoadSkillTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: LoadSkillInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("load_skill 参数非法：{}", error))?;
+        context.skill_manager.load_skill(&input.identifier)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ReadToolResultTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: ReadToolResultInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("read_tool_result 参数非法：{}", error))?;
+        let index_path = context.session_dir.join("tool_results").join("index.json");
+        let content = read_optional_utf8(&index_path)?
+            .ok_or_else(|| anyhow!("工具结果索引不存在：{}", index_path.display()))?;
+        let records: Vec<crate::domain::ToolResultRecord> =
+            serde_json::from_str(&content).unwrap_or_default();
+        let record = records
+            .into_iter()
+            .find(|record| record.handle == input.handle)
+            .ok_or_else(|| anyhow!("未找到工具结果句柄：{}", input.handle))?;
+
+        if record.externalized {
+            let body_path = PathBuf::from(&record.body_file_path);
+            let body = read_optional_utf8(&body_path)?
+                .ok_or_else(|| anyhow!("工具结果正文不存在：{}", body_path.display()))?;
+            Ok(body)
+        } else {
+            Ok(record.projection_content)
+        }
+    }
+}
+
+#[async_trait]
+impl ToolHandler for FetchUrlTool {
+    async fn handle(&self, input: Value, _context: &ToolExecutionContext) -> Result<String> {
+        let input: FetchUrlInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("fetch_url 参数非法：{}", error))?;
+        let client = Client::new();
+        client
+            .get(&input.url)
+            .send()
+            .await
+            .with_context(|| format!("抓取 URL 失败：{}", input.url))?
+            .error_for_status()
+            .with_context(|| format!("URL 返回失败状态：{}", input.url))?
+            .text()
+            .await
+            .with_context(|| format!("读取 URL 正文失败：{}", input.url))
+    }
+}
+
+#[async_trait]
+impl ToolHandler for GithubGetTool {
+    async fn handle(&self, input: Value, _context: &ToolExecutionContext) -> Result<String> {
+        let input: GithubGetInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("github_get 参数非法：{}", error))?;
+        let token = read_required_env("GITHUB_TOKEN")?;
+        let endpoint = if input.endpoint.starts_with('/') {
+            input.endpoint
+        } else {
+            format!("/{}", input.endpoint)
+        };
+        let base_url =
+            std::env::var("GITHUB_API_BASE_URL").unwrap_or_else(|_| "https://api.github.com".to_string());
+        let url = format!("{}{}", base_url.trim_end_matches('/'), endpoint);
+        let client = Client::new();
+        client
+            .get(&url)
+            .header("User-Agent", "dshns-rust-harness")
+            .bearer_auth(token)
+            .send()
+            .await
+            .with_context(|| format!("调用 GitHub 接口失败：{}", url))?
+            .error_for_status()
+            .with_context(|| format!("GitHub 接口返回失败状态：{}", url))?
+            .text()
+            .await
+            .with_context(|| format!("读取 GitHub 接口响应失败：{}", url))
+    }
+}
+
+#[async_trait]
+impl ToolHandler for WebSearchTool {
+    async fn handle(&self, input: Value, _context: &ToolExecutionContext) -> Result<String> {
+        let input: WebSearchInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("web_search 参数非法：{}", error))?;
+        let client = Client::new();
+        let rss = client
+            .get("https://www.bing.com/search")
+            .query(&[("format", "rss"), ("q", input.query.as_str())])
+            .send()
+            .await
+            .context("执行网络搜索失败")?
+            .error_for_status()
+            .context("搜索接口返回失败状态")?
+            .text()
+            .await
+            .context("读取搜索结果正文失败")?;
+
+        let mut items = parse_bing_rss(&rss);
+        if let Some(limit) = input.limit {
+            items.truncate(limit);
+        }
+        Ok(serde_json::to_string_pretty(&items)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for WebRunTool {
+    async fn handle(&self, input: Value, _context: &ToolExecutionContext) -> Result<String> {
+        let input: WebRunInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("web_run 参数非法：{}", error))?;
+        if input.steps.is_empty() {
+            return Err(anyhow!("web_run 至少需要一个步骤"));
+        }
+
+        let client = Client::new();
+        let mut current_url = String::new();
+        let mut current_html = String::new();
+        let mut results = Vec::new();
+
+        for step in input.steps {
+            match step {
+                WebRunStep::Open { url } => {
+                    let html = fetch_text(&client, &url).await?;
+                    current_url = url.clone();
+                    current_html = html;
+                    results.push(WebRunStepResult {
+                        step: "open".to_string(),
+                        url,
+                        success: true,
+                        output: "已打开页面".to_string(),
+                    });
+                }
+                WebRunStep::Click { text_contains } => {
+                    ensure_page_loaded(&current_url)?;
+                    let next_url = find_link_by_text(&current_url, &current_html, &text_contains)?
+                        .ok_or_else(|| anyhow!("未找到包含指定文本的链接：{}", text_contains))?;
+                    let html = fetch_text(&client, &next_url).await?;
+                    current_url = next_url.clone();
+                    current_html = html;
+                    results.push(WebRunStepResult {
+                        step: "click".to_string(),
+                        url: current_url.clone(),
+                        success: true,
+                        output: format!("已点击并打开链接，匹配文本：{}", text_contains),
+                    });
+                }
+                WebRunStep::Find { pattern } => {
+                    ensure_page_loaded(&current_url)?;
+                    let hits = extract_visible_text(&current_html)
+                        .matches(&pattern)
+                        .count();
+                    results.push(WebRunStepResult {
+                        step: "find".to_string(),
+                        url: current_url.clone(),
+                        success: hits > 0,
+                        output: format!("匹配次数：{}", hits),
+                    });
+                }
+                WebRunStep::ExtractText { selector } => {
+                    ensure_page_loaded(&current_url)?;
+                    let text = if let Some(selector) = selector {
+                        extract_text_by_selector(&current_html, &selector)?
+                    } else {
+                        extract_visible_text(&current_html)
+                    };
+                    results.push(WebRunStepResult {
+                        step: "extract_text".to_string(),
+                        url: current_url.clone(),
+                        success: true,
+                        output: text,
+                    });
+                }
+            }
+        }
+
+        Ok(serde_json::to_string_pretty(&results)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for DiscoverMcpServersTool {
+    async fn handle(&self, _input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let manager =
+            McpClientManager::new(context.workspace_root.clone(), context.session_dir.clone());
+        let servers = manager.discover_servers()?;
+        Ok(serde_json::to_string_pretty(&servers)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ConnectMcpServerTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: ConnectMcpInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("connect_mcp_server 参数非法：{}", error))?;
+        let manager =
+            McpClientManager::new(context.workspace_root.clone(), context.session_dir.clone());
+        let state = manager.connect_server(&input.server_id).await?;
+        Ok(serde_json::to_string_pretty(&state)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for CallMcpTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: CallMcpToolInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("call_mcp_tool 参数非法：{}", error))?;
+        let manager =
+            McpClientManager::new(context.workspace_root.clone(), context.session_dir.clone());
+        let result = manager
+            .call_tool(&input.server_id, &input.tool_name, input.arguments)
+            .await?;
+        Ok(serde_json::to_string_pretty(&result)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for AgentOpenTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: AgentOpenInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("agent_open 参数非法：{}", error))?;
+        let manager = SubagentManager::new(context.session_dir.clone());
+        let agent = manager.open(
+            &input.mode,
+            input.inherit_context.unwrap_or(input.mode != "isolate"),
+            input.allowed_paths.unwrap_or_default(),
+            input.task_spec,
+            input.parent_agent_id,
+        )?;
+        Ok(serde_json::to_string_pretty(&agent)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for AgentEvalTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: AgentEvalInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("agent_eval 参数非法：{}", error))?;
+        let manager = SubagentManager::new(context.session_dir.clone());
+        let result = manager.eval(&input.agent_id, input.input)?;
+        Ok(serde_json::to_string_pretty(&result)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for AgentCloseTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: AgentCloseInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("agent_close 参数非法：{}", error))?;
+        let manager = SubagentManager::new(context.session_dir.clone());
+        let result = manager.close(&input.agent_id)?;
+        Ok(serde_json::to_string_pretty(&result)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for PlanWriteTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: PlanWriteInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("plan_write 参数非法：{}", error))?;
+        let path = context
+            .session_dir
+            .join(".tools")
+            .join("plan")
+            .join(format!("{}.md", sanitize_name(&input.plan_type)));
+        write_utf8(&path, &input.content)?;
+        Ok(format!("计划文件已写入：{}", path.display()))
+    }
+}
+
+#[async_trait]
+impl ToolHandler for TaskCreateTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: TaskCreateInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("task_create 参数非法：{}", error))?;
+        let path = context
+            .session_dir
+            .join(".tools")
+            .join("task")
+            .join("tasks.json");
+        let mut records = load_json_array::<TaskRecord>(&path)?;
+        let record = TaskRecord {
+            id: Uuid::new_v4().to_string(),
+            name: input.name,
+            status: "created".to_string(),
+            command: input.command,
+            validation_command: input.validation_command,
+            bound_process_id: None,
+            created_at: crate::utils::time::now_rfc3339(),
+        };
+        records.push(record.clone());
+        write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+        Ok(serde_json::to_string_pretty(&record)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for TaskRunTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: TaskRunInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("task_run 参数非法：{}", error))?;
+        let path = context
+            .session_dir
+            .join(".tools")
+            .join("task")
+            .join("tasks.json");
+        let mut records = load_json_array::<TaskRecord>(&path)?;
+        let index = records
+            .iter()
+            .position(|record| record.id == input.task_id)
+            .ok_or_else(|| anyhow!("未找到任务：{}", input.task_id))?;
+        records[index].status = "running".to_string();
+        write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+
+        let output = run_shell_command(
+            &context.shell_program,
+            &records[index].command,
+            &context.workspace_root,
+            input.timeout_ms.unwrap_or(10_000),
+        )
+        .await?;
+
+        if let Some(validation_command) = records[index].validation_command.clone() {
+            let validation_output = run_shell_command(
+                &context.shell_program,
+                &validation_command,
+                &context.workspace_root,
+                input.timeout_ms.unwrap_or(10_000),
+            )
+            .await?;
+            records[index].status = "validated".to_string();
+            write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+            return Ok(format!(
+                "任务执行完成。\n主命令结果：\n{}\n\n验证命令结果：\n{}",
+                output, validation_output
+            ));
+        }
+
+        records[index].status = "done".to_string();
+        write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+        Ok(output)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for AutomationCreateTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: AutomationCreateInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("automation_create 参数非法：{}", error))?;
+        let path = context
+            .session_dir
+            .join(".tools")
+            .join("automation")
+            .join("automations.json");
+        let mut records = load_json_array::<AutomationRecord>(&path)?;
+        let record = AutomationRecord {
+            id: Uuid::new_v4().to_string(),
+            name: input.name,
+            kind: input.kind,
+            status: input.status,
+            definition_json: serde_json::to_string(&input.definition)?,
+            last_run_at: None,
+        };
+        records.push(record.clone());
+        write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+        Ok(serde_json::to_string_pretty(&record)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for AutomationRunOnceTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: AutomationRunOnceInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("automation_run_once 参数非法：{}", error))?;
+        let path = context
+            .session_dir
+            .join(".tools")
+            .join("automation")
+            .join("automations.json");
+        let mut records = load_json_array::<AutomationRecord>(&path)?;
+        let index = records
+            .iter()
+            .position(|record| record.id == input.automation_id)
+            .ok_or_else(|| anyhow!("未找到自动化：{}", input.automation_id))?;
+        let definition: Value = serde_json::from_str(&records[index].definition_json)?;
+        let command = definition
+            .get("command")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("自动化定义缺少 command 字段"))?;
+        let working_directory = definition
+            .get("working_directory")
+            .and_then(Value::as_str)
+            .map(|value| resolve_path(&context.workspace_root, value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+
+        let output = run_shell_command(
+            &context.shell_program,
+            command,
+            &working_directory,
+            input.timeout_ms.unwrap_or(10_000),
+        )
+        .await?;
+
+        records[index].last_run_at = Some(crate::utils::time::now_rfc3339());
+        write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+        Ok(output)
+    }
+}
+
+fn resolve_path(workspace_root: &Path, raw_path: &str) -> PathBuf {
+    let path = Path::new(raw_path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace_root.join(path)
+    }
+}
+
+async fn run_shell_command(
+    shell_program: &str,
+    command_text: &str,
+    working_directory: &Path,
+    timeout_ms: u64,
+) -> Result<String> {
+    let mut command = Command::new(shell_program);
+    command.kill_on_drop(true);
+    command
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg(command_text)
+        .current_dir(working_directory)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let output = timeout(Duration::from_millis(timeout_ms), command.output())
+        .await
+        .map_err(|_| anyhow!("Shell 命令执行超时，{} 毫秒内未完成", timeout_ms))?
+        .with_context(|| format!("执行 Shell 命令失败：{}", command_text))?;
+
+    Ok(render_process_output(
+        &output.stdout,
+        &output.stderr,
+        output.status.code(),
+    ))
+}
+
+fn render_process_output(stdout: &[u8], stderr: &[u8], code: Option<i32>) -> String {
+    let stdout = String::from_utf8_lossy(stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+    let mut rendered = format!("退出码：{}\n", code.unwrap_or(-1));
+    if !stdout.is_empty() {
+        rendered.push_str(&format!("标准输出：\n{}\n", stdout));
+    }
+    if !stderr.is_empty() {
+        rendered.push_str(&format!("标准错误：\n{}\n", stderr));
+    }
+    rendered.trim().to_string()
+}
+
+fn load_json_array<T>(path: &Path) -> Result<Vec<T>>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let content = read_optional_utf8(path)?.unwrap_or_else(|| "[]".to_string());
+    Ok(serde_json::from_str(&content).unwrap_or_default())
+}
+
+fn sanitize_name(name: &str) -> String {
+    name.chars()
+        .map(|value| {
+            if value.is_ascii_alphanumeric() || value == '-' || value == '_' {
+                value
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn rlm_registry() -> &'static Arc<Mutex<std::collections::HashMap<String, ManagedRlmProcess>>> {
+    static REGISTRY: OnceLock<Arc<Mutex<std::collections::HashMap<String, ManagedRlmProcess>>>> =
+        OnceLock::new();
+    REGISTRY.get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new())))
+}
+
+fn persist_rlm_record(session_dir: &Path, record: RlmProcessRecord) -> Result<()> {
+    let path = session_dir
+        .join(".tools")
+        .join("rlm")
+        .join("processes.json");
+    let mut records = load_json_array::<RlmProcessRecord>(&path)?;
+    records.push(record);
+    write_utf8(&path, &serde_json::to_string_pretty(&records)?)
+}
+
+fn touch_rlm_record(
+    session_dir: &Path,
+    process_id: &str,
+    working_directory: Option<String>,
+    status: Option<&str>,
+) -> Result<()> {
+    let path = session_dir
+        .join(".tools")
+        .join("rlm")
+        .join("processes.json");
+    let mut records = load_json_array::<RlmProcessRecord>(&path)?;
+    if let Some(index) = records.iter().position(|record| record.id == process_id) {
+        if let Some(working_directory) = working_directory {
+            records[index].working_directory = working_directory;
+        }
+        if let Some(status) = status {
+            records[index].status = status.to_string();
+        }
+        records[index].updated_at = crate::utils::time::now_rfc3339();
+        write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+    }
+    Ok(())
+}
+
+fn parse_bing_rss(content: &str) -> Vec<SearchResultItem> {
+    let mut items = Vec::new();
+    let mut rest = content;
+
+    while let Some(start) = rest.find("<item>") {
+        let after_start = &rest[start + "<item>".len()..];
+        let Some(end) = after_start.find("</item>") else {
+            break;
+        };
+        let block = &after_start[..end];
+        let title = extract_xml_tag(block, "title").unwrap_or_default();
+        let link = extract_xml_tag(block, "link").unwrap_or_default();
+        let snippet = extract_xml_tag(block, "description").unwrap_or_default();
+        items.push(SearchResultItem {
+            title: decode_xml_entities(&title),
+            link: decode_xml_entities(&link),
+            snippet: decode_xml_entities(&snippet),
+        });
+        rest = &after_start[end + "</item>".len()..];
+    }
+
+    items
+}
+
+async fn fetch_text(client: &Client, url: &str) -> Result<String> {
+    client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("访问网页失败：{}", url))?
+        .error_for_status()
+        .with_context(|| format!("网页返回失败状态：{}", url))?
+        .text()
+        .await
+        .with_context(|| format!("读取网页内容失败：{}", url))
+}
+
+fn ensure_page_loaded(current_url: &str) -> Result<()> {
+    if current_url.is_empty() {
+        Err(anyhow!("当前还没有打开任何网页，请先执行 open 步骤"))
+    } else {
+        Ok(())
+    }
+}
+
+fn find_link_by_text(base_url: &str, html: &str, text_contains: &str) -> Result<Option<String>> {
+    let document = Html::parse_document(html);
+    let selector =
+        Selector::parse("a").map_err(|error| anyhow!("解析链接选择器失败：{}", error))?;
+    let base = Url::parse(base_url).with_context(|| format!("解析当前 URL 失败：{}", base_url))?;
+
+    for link in document.select(&selector) {
+        let text = link.text().collect::<Vec<_>>().join(" ");
+        if !text.contains(text_contains) {
+            continue;
+        }
+        if let Some(href) = link.value().attr("href") {
+            let resolved = base
+                .join(href)
+                .with_context(|| format!("拼接链接失败：{}", href))?;
+            return Ok(Some(resolved.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+fn extract_visible_text(html: &str) -> String {
+    let document = Html::parse_document(html);
+    let selector = Selector::parse("body").expect("body 选择器必须合法");
+    document
+        .select(&selector)
+        .flat_map(|node| node.text())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn extract_text_by_selector(html: &str, selector_text: &str) -> Result<String> {
+    let document = Html::parse_document(html);
+    let selector = Selector::parse(selector_text)
+        .map_err(|error| anyhow!("解析 CSS 选择器失败：{}，选择器：{}", error, selector_text))?;
+    let text = document
+        .select(&selector)
+        .flat_map(|node| node.text())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+fn extract_xml_tag(block: &str, tag: &str) -> Option<String> {
+    let start_token = format!("<{}>", tag);
+    let end_token = format!("</{}>", tag);
+    let start = block.find(&start_token)?;
+    let tail = &block[start + start_token.len()..];
+    let end = tail.find(&end_token)?;
+    Some(tail[..end].to_string())
+}
+
+fn decode_xml_entities(value: &str) -> String {
+    value
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("<![CDATA[", "")
+        .replace("]]>", "")
+}
+
+fn read_required_env(name: &str) -> Result<String> {
+    std::env::var(name).map_err(|_| anyhow!("缺少环境变量 {}，无法调用相关工具", name))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use serde_json::json;
+
+    use crate::skill::manager::SkillManager;
+    use crate::tools::registry::{ToolExecutionContext, ToolHandler};
+    use crate::utils::fs::{ensure_directory, read_optional_utf8, write_utf8};
+
+    use super::{
+        extract_text_by_selector, find_link_by_text, parse_bing_rss, read_required_env,
+        PlanWriteTool, ReadToolResultTool, RlmCloseTool, RlmEvalTool, RlmOpenTool, TaskCreateTool,
+    };
+
+    fn build_context(session_dir: &str) -> ToolExecutionContext {
+        let workspace_root = PathBuf::from("target/test_workspace");
+        let session_dir = PathBuf::from(session_dir);
+        ensure_directory(&workspace_root).expect("创建测试工作区失败");
+        ensure_directory(&session_dir).expect("创建测试会话目录失败");
+
+        ToolExecutionContext {
+            workspace_root,
+            session_dir,
+            shell_program: "powershell".to_string(),
+            skill_manager: SkillManager::new(Vec::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn should_write_plan_file() {
+        let context = build_context("target/test_plan_session");
+        let tool = PlanWriteTool;
+        let result = tool
+            .handle(
+                json!({
+                    "plan_type": "implementation",
+                    "content": "# 计划\n- 第一步"
+                }),
+                &context,
+            )
+            .await
+            .expect("计划写入失败");
+        assert!(result.contains("implementation.md"));
+    }
+
+    #[tokio::test]
+    async fn should_create_task_record() {
+        let context = build_context("target/test_task_session");
+        let tool = TaskCreateTool;
+        tool.handle(
+            json!({
+                "name": "demo",
+                "command": "Write-Output 'hello'"
+            }),
+            &context,
+        )
+        .await
+        .expect("任务创建失败");
+
+        let content = read_optional_utf8(
+            &context
+                .session_dir
+                .join(".tools")
+                .join("task")
+                .join("tasks.json"),
+        )
+        .expect("读取任务文件失败")
+        .expect("任务文件不存在");
+        assert!(content.contains("\"name\": \"demo\""));
+    }
+
+    #[tokio::test]
+    async fn should_read_tool_result_handle() {
+        let context = build_context("target/test_tool_result_session");
+        let index_path = context.session_dir.join("tool_results").join("index.json");
+        write_utf8(
+            &index_path,
+            r#"[{"tool_call_id":"call_1","tool_name":"read_file","handle":"tool:call_1","body_file_path":"","projection_type":"InlineFull","projection_content":"hello","summary":"ok","preview_head":"","preview_tail":"","char_count":5,"byte_count":5,"success":true,"truncated":false,"externalized":false,"updated_at":"2026-01-01T00:00:00Z"}]"#,
+        )
+        .expect("写入工具结果索引失败");
+
+        let tool = ReadToolResultTool;
+        let result = tool
+            .handle(json!({"handle": "tool:call_1"}), &context)
+            .await
+            .expect("读取句柄失败");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn should_parse_bing_rss_results() {
+        let rss = r#"
+        <rss>
+          <channel>
+            <item>
+              <title>Rust language</title>
+              <link>https://www.rust-lang.org/</link>
+              <description>Systems programming language</description>
+            </item>
+          </channel>
+        </rss>
+        "#;
+        let items = parse_bing_rss(rss);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Rust language");
+        assert_eq!(items[0].link, "https://www.rust-lang.org/");
+    }
+
+    #[test]
+    fn should_find_link_and_extract_text_from_html() {
+        let html = r#"
+        <html>
+          <body>
+            <a href="/next">Go next</a>
+            <div class="content">Hello Rust</div>
+          </body>
+        </html>
+        "#;
+        let url = find_link_by_text("https://example.com/start", html, "Go next")
+            .expect("查找链接失败")
+            .expect("未找到链接");
+        assert_eq!(url, "https://example.com/next");
+
+        let text = extract_text_by_selector(html, ".content").expect("提取文本失败");
+        assert_eq!(text, "Hello Rust");
+    }
+
+    #[tokio::test]
+    async fn should_open_eval_and_close_rlm_process() {
+        let context = build_context(&format!("target/test_rlm_session_{}", uuid::Uuid::new_v4()));
+
+        let open_tool = RlmOpenTool;
+        let open_result = open_tool
+            .handle(json!({}), &context)
+            .await
+            .expect("打开 RLM 进程失败");
+        let open_json: serde_json::Value =
+            serde_json::from_str(&open_result).expect("解析 rlm_open 结果失败");
+        let process_id = open_json
+            .get("process_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("缺少 process_id")
+            .to_string();
+
+        let eval_tool = RlmEvalTool;
+        let eval_result = eval_tool
+            .handle(
+                json!({
+                    "process_id": process_id,
+                    "command": "Write-Output 'hello from rlm'"
+                }),
+                &context,
+            )
+            .await
+            .expect("执行 rlm_eval 失败");
+        assert!(eval_result.contains("hello from rlm"));
+
+        let close_tool = RlmCloseTool;
+        let close_result = close_tool
+            .handle(json!({ "process_id": process_id }), &context)
+            .await
+            .expect("关闭 RLM 进程失败");
+        assert!(close_result.contains("closed"));
+    }
+
+    #[test]
+    fn should_require_missing_env() {
+        let error =
+            read_required_env("DSHNS_TEST_MISSING_ENV").expect_err("应当返回缺少环境变量错误");
+        assert!(error.to_string().contains("缺少环境变量"));
+    }
+}
