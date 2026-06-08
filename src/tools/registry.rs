@@ -12,9 +12,9 @@ use crate::skill::manager::SkillManager;
 use crate::tools::builtin::{
     AgentCloseTool, AgentEvalTool, AgentOpenTool, AutomationCreateTool, AutomationRunOnceTool,
     CallMcpTool, ConnectMcpServerTool, DiscoverMcpServersTool, FetchUrlTool, GithubGetTool,
-    LoadSkillTool, PlanWriteTool, ReadFileTool, ReadToolResultTool, RlmCloseTool, RlmConfigureTool,
-    RlmEvalTool, RlmOpenTool, RunShellTool, TaskCreateTool, TaskRunTool, WebRunTool, WebSearchTool,
-    WriteFileTool,
+    HandleReadTool, LoadSkillTool, PlanWriteTool, ReadFileTool, ReadToolResultTool,
+    RetrieveToolResultTool, RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool,
+    TaskCreateTool, TaskRunTool, WebRunTool, WebSearchTool, WriteFileTool,
 };
 
 /// 工具定义。
@@ -230,6 +230,44 @@ impl ToolRegistry {
                 ToolRiskLevel::ReadOnly,
             ),
             Arc::new(ReadToolResultTool),
+        );
+        registry.register(
+            tool_definition(
+                "retrieve_tool_result",
+                "按工具调用编号读取摘要、头部、尾部、切片或关键字上下文。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "tool_call_id": { "type": "string", "description": "工具调用编号" },
+                        "mode": { "type": "string", "description": "summary、head、tail、body、slice、keyword_context" },
+                        "start_char": { "type": "integer", "description": "slice 模式下的起始字符偏移" },
+                        "length_chars": { "type": "integer", "description": "slice 模式下的读取字符数" },
+                        "keyword": { "type": "string", "description": "keyword_context 模式下的关键字" },
+                        "context_chars": { "type": "integer", "description": "关键字前后保留的字符数" }
+                    },
+                    "required": ["tool_call_id"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(RetrieveToolResultTool),
+        );
+        registry.register(
+            tool_definition(
+                "handle_read",
+                "按 tool: 或 file: 句柄读取受限内容。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "handle": { "type": "string", "description": "tool: 或 file: 句柄" },
+                        "max_chars": { "type": "integer", "description": "可选最大返回字符数" }
+                    },
+                    "required": ["handle"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(HandleReadTool),
         );
         registry.register(
             tool_definition(

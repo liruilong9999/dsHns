@@ -77,6 +77,22 @@ struct ReadToolResultInput {
 }
 
 #[derive(Deserialize)]
+struct RetrieveToolResultInput {
+    tool_call_id: String,
+    mode: Option<String>,
+    start_char: Option<usize>,
+    length_chars: Option<usize>,
+    keyword: Option<String>,
+    context_chars: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct HandleReadInput {
+    handle: String,
+    max_chars: Option<usize>,
+}
+
+#[derive(Deserialize)]
 struct FetchUrlInput {
     url: String,
 }
@@ -531,6 +547,9 @@ impl ToolHandler for LoadSkillTool {
     }
 }
 
+pub struct RetrieveToolResultTool;
+pub struct HandleReadTool;
+
 #[async_trait]
 impl ToolHandler for ReadToolResultTool {
     async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
@@ -554,6 +573,80 @@ impl ToolHandler for ReadToolResultTool {
         } else {
             Ok(record.projection_content)
         }
+    }
+}
+
+#[async_trait]
+impl ToolHandler for RetrieveToolResultTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: RetrieveToolResultInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("retrieve_tool_result 参数非法：{}", error))?;
+        let record = find_tool_result_record(&context.session_dir, &input.tool_call_id)?;
+        let mode = input.mode.as_deref().unwrap_or("body");
+
+        match mode {
+            "summary" => Ok(record.summary),
+            "head" => Ok(record.preview_head),
+            "tail" => Ok(record.preview_tail),
+            "body" => read_tool_result_record_body(&record),
+            "slice" => {
+                let start_char = input.start_char.unwrap_or(0);
+                let length_chars = input.length_chars.ok_or_else(|| {
+                    anyhow!("retrieve_tool_result 在 slice 模式下缺少 length_chars")
+                })?;
+                let body = read_tool_result_record_body(&record)?;
+                Ok(slice_by_chars(&body, start_char, length_chars))
+            }
+            "keyword_context" => {
+                let keyword = input
+                    .keyword
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        anyhow!("retrieve_tool_result 在 keyword_context 模式下缺少 keyword")
+                    })?;
+                let context_chars = input.context_chars.unwrap_or(80);
+                let body = read_tool_result_record_body(&record)?;
+                extract_keyword_context(&body, &keyword, context_chars)
+                    .ok_or_else(|| anyhow!("未在工具结果中找到关键字：{}", keyword))
+            }
+            _ => Err(anyhow!("retrieve_tool_result 不支持的 mode：{}", mode)),
+        }
+    }
+}
+
+#[async_trait]
+impl ToolHandler for HandleReadTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: HandleReadInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("handle_read 参数非法：{}", error))?;
+        let output = if let Some(handle) = input.handle.strip_prefix("tool:") {
+            let record = find_tool_result_record(&context.session_dir, handle)?;
+            read_tool_result_record_body(&record)?
+        } else if let Some(raw_path) = input.handle.strip_prefix("file:") {
+            let path = resolve_path(&context.workspace_root, raw_path);
+            let workspace_root = context
+                .workspace_root
+                .canonicalize()
+                .unwrap_or_else(|_| context.workspace_root.clone());
+            let canonical_path = path
+                .canonicalize()
+                .map_err(|_| anyhow!("文件句柄指向的目标不存在：{}", path.display()))?;
+            if !canonical_path.starts_with(&workspace_root) {
+                return Err(anyhow!(
+                    "file: 句柄超出工作区范围，禁止读取：{}",
+                    canonical_path.display()
+                ));
+            }
+            read_optional_utf8(&canonical_path)?
+                .ok_or_else(|| anyhow!("文件句柄指向的目标不存在：{}", canonical_path.display()))?
+        } else {
+            return Err(anyhow!(
+                "handle_read 仅支持 tool: 或 file: 句柄：{}",
+                input.handle
+            ));
+        };
+
+        Ok(truncate_chars(&output, input.max_chars))
     }
 }
 
@@ -980,6 +1073,63 @@ fn resolve_path(workspace_root: &Path, raw_path: &str) -> PathBuf {
     } else {
         workspace_root.join(path)
     }
+}
+
+fn find_tool_result_record(
+    session_dir: &Path,
+    tool_call_id: &str,
+) -> Result<crate::domain::ToolResultRecord> {
+    let index_path = session_dir.join("tool_results").join("index.json");
+    let content = read_optional_utf8(&index_path)?
+        .ok_or_else(|| anyhow!("工具结果索引不存在：{}", index_path.display()))?;
+    let records: Vec<crate::domain::ToolResultRecord> =
+        serde_json::from_str(&content).unwrap_or_default();
+    records
+        .into_iter()
+        .find(|record| {
+            record.tool_call_id == tool_call_id || record.handle == format!("tool:{}", tool_call_id)
+        })
+        .ok_or_else(|| anyhow!("未找到工具结果：{}", tool_call_id))
+}
+
+fn read_tool_result_record_body(record: &crate::domain::ToolResultRecord) -> Result<String> {
+    if record.externalized {
+        let body_path = PathBuf::from(&record.body_file_path);
+        read_optional_utf8(&body_path)?
+            .ok_or_else(|| anyhow!("工具结果正文不存在：{}", body_path.display()))
+    } else {
+        Ok(record.projection_content.clone())
+    }
+}
+
+fn slice_by_chars(content: &str, start_char: usize, length_chars: usize) -> String {
+    content
+        .chars()
+        .skip(start_char)
+        .take(length_chars)
+        .collect()
+}
+
+fn truncate_chars(content: &str, max_chars: Option<usize>) -> String {
+    match max_chars {
+        Some(limit) => content.chars().take(limit).collect(),
+        None => content.to_string(),
+    }
+}
+
+fn extract_keyword_context(content: &str, keyword: &str, context_chars: usize) -> Option<String> {
+    let chars = content.chars().collect::<Vec<_>>();
+    let keyword_chars = keyword.chars().collect::<Vec<_>>();
+    if keyword_chars.is_empty() {
+        return None;
+    }
+
+    let match_index = chars
+        .windows(keyword_chars.len())
+        .position(|window| window == keyword_chars.as_slice())?;
+    let start = match_index.saturating_sub(context_chars);
+    let end = (match_index + keyword_chars.len() + context_chars).min(chars.len());
+    Some(chars[start..end].iter().collect())
 }
 
 fn current_session_event_context(session_dir: &Path) -> (String, i64) {
