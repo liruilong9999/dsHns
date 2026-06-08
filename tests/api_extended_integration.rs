@@ -96,6 +96,31 @@ async fn should_query_tool_result_body_and_delete_restore_workspace() {
         Some("external tool body")
     );
 
+    let tool_results = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/sessions/{}/tool-results", session_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("请求工具结果索引失败");
+    assert_eq!(tool_results.status(), StatusCode::OK);
+    let tool_results_body = axum::body::to_bytes(tool_results.into_body(), usize::MAX)
+        .await
+        .expect("读取工具结果索引响应失败");
+    let tool_results_json: serde_json::Value =
+        serde_json::from_slice(&tool_results_body).expect("解析工具结果索引响应失败");
+    assert_eq!(
+        tool_results_json
+            .as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("tool_call_id"))
+            .and_then(serde_json::Value::as_str),
+        Some("call_success")
+    );
+
     let tool_calls = router
         .clone()
         .oneshot(

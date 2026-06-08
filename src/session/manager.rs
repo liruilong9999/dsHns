@@ -275,7 +275,12 @@ impl SessionManager {
         &self,
         session_id: &str,
     ) -> Result<Vec<crate::domain::ToolResultRecord>> {
-        self.store.list_tool_result_indexes(session_id)
+        let records = self.store.list_tool_result_indexes(session_id)?;
+        if records.is_empty() {
+            self.read_tool_result_index_from_file(session_id)
+        } else {
+            Ok(records)
+        }
     }
 
     /// 按工具调用标识查询工具结果索引。
