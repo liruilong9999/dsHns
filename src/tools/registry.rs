@@ -12,11 +12,12 @@ use crate::skill::manager::SkillManager;
 use crate::tools::builtin::{
     AgentCloseTool, AgentEvalTool, AgentOpenTool, AutomationCreateTool, AutomationRunOnceTool,
     CallMcpTool, ConnectMcpServerTool, DiagnosticsTool, DiscoverMcpServersTool, EditFileTool,
-    FetchUrlTool, FileSearchTool, FimEditTool, GithubGetTool, GrepFilesTool, HandleReadTool,
-    ListDirTool, LoadSkillTool, NoteTool, NotifyTool, PlanWriteTool, ProjectMapTool, ReadFileTool,
-    ReadToolResultTool, RecallArchiveTool, RememberTool, RetrieveToolResultTool, ReviewTool,
-    RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, RunTestsTool,
-    TaskCreateTool, TaskRunTool, ValidateDataTool, WebRunTool, WebSearchTool, WriteFileTool,
+    FetchUrlTool, FileSearchTool, FimEditTool, GitBlameTool, GitDiffTool, GitLogTool, GitShowTool,
+    GitStatusTool, GithubGetTool, GrepFilesTool, HandleReadTool, ListDirTool, LoadSkillTool,
+    NoteTool, NotifyTool, PlanWriteTool, ProjectMapTool, ReadFileTool, ReadToolResultTool,
+    RecallArchiveTool, RememberTool, RetrieveToolResultTool, ReviewTool, RlmCloseTool,
+    RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, RunTestsTool, TaskCreateTool,
+    TaskRunTool, ValidateDataTool, WebRunTool, WebSearchTool, WriteFileTool,
 };
 
 /// 工具定义。
@@ -376,6 +377,89 @@ impl ToolRegistry {
                 ToolRiskLevel::Write,
             ),
             Arc::new(FimEditTool),
+        );
+        registry.register(
+            tool_definition(
+                "git_status",
+                "返回当前仓库状态摘要。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "root_path": { "type": "string", "description": "可选 Git 根目录" }
+                    },
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(GitStatusTool),
+        );
+        registry.register(
+            tool_definition(
+                "git_diff",
+                "返回当前仓库变更 diff。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "root_path": { "type": "string", "description": "可选 Git 根目录" },
+                        "revision": { "type": "string", "description": "可选对比版本" }
+                    },
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(GitDiffTool),
+        );
+        registry.register(
+            tool_definition(
+                "git_log",
+                "返回当前仓库提交历史摘要。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "root_path": { "type": "string", "description": "可选 Git 根目录" },
+                        "limit": { "type": "integer", "description": "可选返回提交数量" }
+                    },
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(GitLogTool),
+        );
+        registry.register(
+            tool_definition(
+                "git_show",
+                "查看指定提交或对象详情。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "root_path": { "type": "string", "description": "可选 Git 根目录" },
+                        "object": { "type": "string", "description": "提交号或对象名" }
+                    },
+                    "required": ["object"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(GitShowTool),
+        );
+        registry.register(
+            tool_definition(
+                "git_blame",
+                "查看文件逐行归属信息。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "root_path": { "type": "string", "description": "可选 Git 根目录" },
+                        "path": { "type": "string", "description": "目标文件路径" },
+                        "start_line": { "type": "integer", "description": "可选起始行号" },
+                        "end_line": { "type": "integer", "description": "可选结束行号" }
+                    },
+                    "required": ["path"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(GitBlameTool),
         );
         registry.register(
             tool_definition(

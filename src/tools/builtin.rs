@@ -127,6 +127,37 @@ struct FimEditInput {
 }
 
 #[derive(Deserialize)]
+struct GitStatusInput {
+    root_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GitDiffInput {
+    root_path: Option<String>,
+    revision: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GitLogInput {
+    root_path: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct GitShowInput {
+    root_path: Option<String>,
+    object: String,
+}
+
+#[derive(Deserialize)]
+struct GitBlameInput {
+    root_path: Option<String>,
+    path: String,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+}
+
+#[derive(Deserialize)]
 struct RunShellInput {
     command: String,
     working_directory: Option<String>,
@@ -469,6 +500,11 @@ pub struct RememberTool;
 pub struct RecallArchiveTool;
 pub struct NotifyTool;
 pub struct FimEditTool;
+pub struct GitStatusTool;
+pub struct GitDiffTool;
+pub struct GitLogTool;
+pub struct GitShowTool;
+pub struct GitBlameTool;
 
 #[async_trait]
 impl ToolHandler for EditFileTool {
@@ -847,6 +883,92 @@ impl ToolHandler for FimEditTool {
         let replaced = original.replacen(&input.old_text, &input.new_text, 1);
         write_utf8(&path, &replaced)?;
         Ok(format!("已完成 FIM 替换编辑：{}", path.display()))
+    }
+}
+
+#[async_trait]
+impl ToolHandler for GitStatusTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: GitStatusInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("git_status 参数非法：{}", error))?;
+        let root = input
+            .root_path
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+        run_shell_command(
+            &context.shell_program,
+            "git status --short --branch",
+            &root,
+            10_000,
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl ToolHandler for GitDiffTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: GitDiffInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("git_diff 参数非法：{}", error))?;
+        let root = input
+            .root_path
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+        let command = if let Some(revision) = input.revision {
+            format!("git diff {}", revision)
+        } else {
+            "git diff".to_string()
+        };
+        run_shell_command(&context.shell_program, &command, &root, 10_000).await
+    }
+}
+
+#[async_trait]
+impl ToolHandler for GitLogTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: GitLogInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("git_log 参数非法：{}", error))?;
+        let root = input
+            .root_path
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+        let limit = input.limit.unwrap_or(10);
+        let command = format!("git log -n {} --oneline", limit);
+        run_shell_command(&context.shell_program, &command, &root, 10_000).await
+    }
+}
+
+#[async_trait]
+impl ToolHandler for GitShowTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: GitShowInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("git_show 参数非法：{}", error))?;
+        let root = input
+            .root_path
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+        let command = format!("git show --stat {}", input.object);
+        run_shell_command(&context.shell_program, &command, &root, 10_000).await
+    }
+}
+
+#[async_trait]
+impl ToolHandler for GitBlameTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: GitBlameInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("git_blame 参数非法：{}", error))?;
+        let root = input
+            .root_path
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+        let relative_path = Path::new(&input.path);
+        let line_clause = match (input.start_line, input.end_line) {
+            (Some(start), Some(end)) => format!("-L {},{} ", start, end),
+            (Some(start), None) => format!("-L {},{} ", start, start),
+            _ => String::new(),
+        };
+        let command = format!("git blame {}-- {}", line_clause, relative_path.display());
+        run_shell_command(&context.shell_program, &command, &root, 10_000).await
     }
 }
 
