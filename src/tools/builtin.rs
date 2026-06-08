@@ -1240,9 +1240,7 @@ impl ToolHandler for RequestUserInputTool {
                 return Err(anyhow!("request_user_input 存在空白问题字段"));
             }
             if question.options.len() < 2 || question.options.len() > 3 {
-                return Err(anyhow!(
-                    "request_user_input 的每个问题需要 2 到 3 个选项"
-                ));
+                return Err(anyhow!("request_user_input 的每个问题需要 2 到 3 个选项"));
             }
             if question.options.iter().any(|option| {
                 option.label.trim().is_empty() || option.description.trim().is_empty()

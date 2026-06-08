@@ -16,9 +16,9 @@ use crate::tools::builtin::{
     FileSearchTool, FimEditTool, FinanceTool, GitBlameTool, GitDiffTool, GitLogTool, GitShowTool,
     GitStatusTool, GithubGetTool, GrepFilesTool, HandleReadTool, ListDirTool, LoadSkillTool,
     NoteTool, NotifyTool, PlanWriteTool, ProjectMapTool, ReadFileTool, ReadToolResultTool,
-    RecallArchiveTool, RememberTool, RequestUserInputTool, RetrieveToolResultTool, ReviewTool, RlmCloseTool,
-    RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, RunTestsTool, TaskCreateTool,
-    TaskRunTool, ValidateDataTool, WebRunTool, WebSearchTool, WriteFileTool,
+    RecallArchiveTool, RememberTool, RequestUserInputTool, RetrieveToolResultTool, ReviewTool,
+    RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, RunTestsTool,
+    TaskCreateTool, TaskRunTool, ValidateDataTool, WebRunTool, WebSearchTool, WriteFileTool,
 };
 
 /// 工具定义。
