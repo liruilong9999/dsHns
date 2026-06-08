@@ -2253,7 +2253,7 @@ fn find_tool_result_record(
 }
 
 fn read_tool_result_record_body(record: &crate::domain::ToolResultRecord) -> Result<String> {
-    if record.externalized {
+    if !record.body_file_path.is_empty() {
         let body_path = PathBuf::from(&record.body_file_path);
         read_optional_utf8(&body_path)?
             .ok_or_else(|| anyhow!("工具结果正文不存在：{}", body_path.display()))

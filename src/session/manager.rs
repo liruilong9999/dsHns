@@ -536,7 +536,7 @@ impl SessionManager {
         &self,
         record: &crate::domain::ToolResultRecord,
     ) -> Result<String> {
-        if record.externalized {
+        if !record.body_file_path.is_empty() {
             read_optional_utf8(Path::new(&record.body_file_path))?
                 .ok_or_else(|| anyhow!("工具结果正文不存在：{}", record.body_file_path))
         } else {

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::approval::manager::ApprovalManager;
 use crate::domain::{
@@ -269,15 +269,18 @@ impl ToolExecutor {
         let char_count = effective_text.chars().count();
         let byte_count = effective_text.len();
         let externalized = char_count > self.inline_output_limit;
-        let body_file_path = if externalized {
-            let path = session_dir
-                .join("tool_results")
-                .join(format!("{}.txt", receipt.tool_call_id));
-            write_utf8(&path, effective_text)?;
-            path.to_string_lossy().to_string()
-        } else {
-            String::new()
-        };
+        let body_path = session_dir
+            .join("tool_results")
+            .join(format!("{}.txt", receipt.tool_call_id));
+        let body_json = serde_json::to_string_pretty(&json!({
+            "toolCallId": receipt.tool_call_id,
+            "toolName": receipt.tool_name,
+            "success": receipt.success,
+            "output": receipt.output,
+            "errorMessage": receipt.error_message
+        }))?;
+        write_utf8(&body_path, &body_json)?;
+        let body_file_path = body_path.to_string_lossy().to_string();
         let preview_head: String = effective_text.chars().take(120).collect();
         let preview_tail = {
             let chars: Vec<char> = effective_text.chars().collect();
