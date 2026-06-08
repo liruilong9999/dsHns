@@ -92,6 +92,7 @@ impl EventBus {
         round_no: i64,
         input_tokens: usize,
         output_tokens: usize,
+        cache_hit_rate: f64,
         remaining_context: usize,
     ) -> Result<()> {
         self.emit(IpcEvent {
@@ -103,6 +104,7 @@ impl EventBus {
             payload: json!({
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
+                "cache_hit_rate": cache_hit_rate,
                 "remaining_context": remaining_context
             }),
         })
@@ -269,5 +271,23 @@ mod tests {
             .expect("写入事件失败");
         let events = bus.list_events().expect("读取事件失败");
         assert!(!events.is_empty());
+    }
+
+    #[test]
+    fn should_read_latest_token_usage_snapshot() {
+        let bus = EventBus::new(PathBuf::from(format!(
+            "target/test_event_bus_tokens_{}",
+            uuid::Uuid::new_v4()
+        )));
+        bus.emit_token_usage("session-1", 1, 10, 20, 0.25, 1000)
+            .expect("写入 Token 统计失败");
+        let snapshot = bus
+            .latest_token_usage()
+            .expect("读取 Token 统计失败")
+            .expect("缺少 Token 统计快照");
+        assert_eq!(snapshot.input_tokens, 10);
+        assert_eq!(snapshot.output_tokens, 20);
+        assert_eq!(snapshot.remaining_context, 1000);
+        assert!((snapshot.cache_hit_rate - 0.25).abs() < f64::EPSILON);
     }
 }

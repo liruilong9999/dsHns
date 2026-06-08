@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::settings::Settings;
 use crate::domain::{
-    AgentInstance, DeletionAudit, Session, ToolCallRecord, ToolResultRecord, WorkingMemoryEntry,
-    WorkspaceDirectory,
+    AgentInstance, DeletionAudit, Session, SessionStatusSnapshot, ToolCallRecord,
+    ToolResultRecord, WorkingMemoryEntry, WorkspaceDirectory,
 };
 use crate::ipc::bus::EventBus;
 use crate::ipc::events::IpcEvent;
@@ -99,6 +99,7 @@ impl ApiApp {
                 "/sessions/{session_id}",
                 get(get_session).delete(delete_session),
             )
+            .route("/sessions/{session_id}/status", get(get_session_status))
             .route("/sessions/{key}/restore", get(restore_session))
             .route("/sessions/{session_id}/events", get(list_events))
             .route("/sessions/{session_id}/memory", get(list_working_memories))
@@ -160,6 +161,23 @@ async fn get_session(
     Path(session_id): Path<String>,
 ) -> Result<Json<Session>, ApiError> {
     Ok(Json(state.session_manager.use_session(&session_id)?))
+}
+
+async fn get_session_status(
+    State(state): State<ApiState>,
+    Path(session_id): Path<String>,
+) -> Result<Json<SessionStatusSnapshot>, ApiError> {
+    let session = state.session_manager.use_session(&session_id)?;
+    let token_usage = EventBus::new(session.session_dir.clone())
+        .latest_token_usage()?
+        .unwrap_or_default();
+    Ok(Json(SessionStatusSnapshot {
+        session,
+        input_tokens: token_usage.input_tokens,
+        output_tokens: token_usage.output_tokens,
+        cache_hit_rate: token_usage.cache_hit_rate,
+        remaining_context: token_usage.remaining_context,
+    }))
 }
 
 async fn delete_session(

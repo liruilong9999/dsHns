@@ -188,6 +188,7 @@ impl AgentLoopRunner {
                     .input_tokens
                     .max(context.estimated_tokens_before),
                 model_response.output_tokens,
+                0.0,
                 remaining_context,
             )?;
             return Ok(TurnOutcome {

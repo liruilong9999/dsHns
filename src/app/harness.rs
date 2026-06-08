@@ -8,7 +8,9 @@ use anyhow::{anyhow, Result};
 use crate::agent::loop_runner::{AgentLoopRunner, TurnOutcome};
 use crate::approval::manager::ApprovalManager;
 use crate::config::settings::Settings;
-use crate::domain::{ApprovalMode, DeletionAudit, Session, SessionStatus, WorkspaceDirectory};
+use crate::domain::{
+    ApprovalMode, DeletionAudit, Session, SessionStatus, SessionStatusSnapshot, WorkspaceDirectory,
+};
 use crate::ipc::bus::EventBus;
 use crate::ipc::events::IpcEvent;
 use crate::llm::client::LlmClient;
@@ -136,6 +138,38 @@ impl Harness {
             .as_ref()
             .ok_or_else(|| anyhow!("当前尚未选择会话，无法查看 Token 统计"))?;
         EventBus::new(session.session_dir.clone()).latest_token_usage()
+    }
+
+    /// 构造当前会话状态快照。
+    pub fn current_status_snapshot(&self) -> Result<SessionStatusSnapshot> {
+        let session = self
+            .current_session
+            .as_ref()
+            .ok_or_else(|| anyhow!("当前尚未选择会话，无法查看状态快照"))?
+            .clone();
+        let token_usage = self.latest_current_token_usage()?.unwrap_or_default();
+        Ok(SessionStatusSnapshot {
+            session,
+            input_tokens: token_usage.input_tokens,
+            output_tokens: token_usage.output_tokens,
+            cache_hit_rate: token_usage.cache_hit_rate,
+            remaining_context: token_usage.remaining_context,
+        })
+    }
+
+    /// 按会话标识构造状态快照。
+    pub fn session_status_snapshot(&self, key: &str) -> Result<SessionStatusSnapshot> {
+        let session = self.session_manager.use_session(key)?;
+        let token_usage = EventBus::new(session.session_dir.clone())
+            .latest_token_usage()?
+            .unwrap_or_default();
+        Ok(SessionStatusSnapshot {
+            session,
+            input_tokens: token_usage.input_tokens,
+            output_tokens: token_usage.output_tokens,
+            cache_hit_rate: token_usage.cache_hit_rate,
+            remaining_context: token_usage.remaining_context,
+        })
     }
 
     /// 列出当前会话的工作记忆。

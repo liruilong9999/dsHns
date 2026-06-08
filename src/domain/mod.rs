@@ -8,6 +8,8 @@ pub mod audit;
 pub mod message;
 /// 会话相关领域模型。
 pub mod session;
+/// 状态快照领域模型。
+pub mod status;
 /// 工具相关领域模型。
 pub mod tool;
 /// 工作记忆领域模型。
@@ -19,6 +21,7 @@ pub use agent::{AgentInstance, AgentMode, AgentStatus};
 pub use audit::DeletionAudit;
 pub use message::{AssistantToolCall, Message, MessageRole, ToolFunctionCall};
 pub use session::{ApprovalMode, Session, SessionStatus};
+pub use status::SessionStatusSnapshot;
 pub use tool::{
     ReplaceRange, ToolCallRecord, ToolFailureType, ToolProjectionType, ToolResultRecord,
     ToolRiskLevel,
