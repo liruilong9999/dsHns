@@ -11,10 +11,11 @@ use crate::domain::ToolRiskLevel;
 use crate::skill::manager::SkillManager;
 use crate::tools::builtin::{
     AgentCloseTool, AgentEvalTool, AgentOpenTool, AutomationCreateTool, AutomationRunOnceTool,
-    CallMcpTool, ConnectMcpServerTool, DiscoverMcpServersTool, FetchUrlTool, GithubGetTool,
-    HandleReadTool, LoadSkillTool, PlanWriteTool, ReadFileTool, ReadToolResultTool,
-    RetrieveToolResultTool, RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool,
-    TaskCreateTool, TaskRunTool, WebRunTool, WebSearchTool, WriteFileTool,
+    CallMcpTool, ConnectMcpServerTool, DiscoverMcpServersTool, EditFileTool, FetchUrlTool,
+    FileSearchTool, GithubGetTool, GrepFilesTool, HandleReadTool, ListDirTool, LoadSkillTool,
+    PlanWriteTool, ReadFileTool, ReadToolResultTool, RetrieveToolResultTool, RlmCloseTool,
+    RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, TaskCreateTool, TaskRunTool,
+    WebRunTool, WebSearchTool, WriteFileTool,
 };
 
 /// 工具定义。
@@ -133,6 +134,77 @@ impl ToolRegistry {
                 ToolRiskLevel::Execute,
             ),
             Arc::new(RunShellTool),
+        );
+        registry.register(
+            tool_definition(
+                "edit_file",
+                "单文件查找替换，支持 replace_all。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "目标文件路径" },
+                        "old_text": { "type": "string", "description": "待替换旧文本" },
+                        "new_text": { "type": "string", "description": "新文本" },
+                        "replace_all": { "type": "boolean", "description": "是否替换全部匹配" }
+                    },
+                    "required": ["path", "old_text", "new_text"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Write,
+            ),
+            Arc::new(EditFileTool),
+        );
+        registry.register(
+            tool_definition(
+                "list_dir",
+                "列目录，支持隐藏文件开关。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "可选目录路径" },
+                        "include_hidden": { "type": "boolean", "description": "是否包含隐藏文件" }
+                    },
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(ListDirTool),
+        );
+        registry.register(
+            tool_definition(
+                "file_search",
+                "按文件名关键字递归搜索。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "文件名关键字" },
+                        "root_path": { "type": "string", "description": "可选搜索根目录" },
+                        "limit": { "type": "integer", "description": "可选返回数量上限" }
+                    },
+                    "required": ["query"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(FileSearchTool),
+        );
+        registry.register(
+            tool_definition(
+                "grep_files",
+                "在工作区递归按正则搜索内容。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "正则表达式" },
+                        "root_path": { "type": "string", "description": "可选搜索根目录" },
+                        "limit": { "type": "integer", "description": "可选返回数量上限" }
+                    },
+                    "required": ["pattern"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(GrepFilesTool),
         );
         registry.register(
             tool_definition(

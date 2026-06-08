@@ -13,6 +13,7 @@ configparser = "3.1"
 directories = "5.0"
 futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+regex = "1.12"
 rusqlite = { version = "0.31", features = ["bundled"] }
 scraper = "0.24"
 serde = { version = "1.0", features = ["derive"] }

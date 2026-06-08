@@ -5,6 +5,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
+use regex::Regex;
 use reqwest::Client;
 use reqwest::Url;
 use scraper::{Html, Selector};
@@ -35,6 +36,34 @@ struct WriteFileInput {
     path: String,
     content: Option<String>,
     replace_range: Option<ReplaceRange>,
+}
+
+#[derive(Deserialize)]
+struct EditFileInput {
+    path: String,
+    old_text: String,
+    new_text: String,
+    replace_all: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct ListDirInput {
+    path: Option<String>,
+    include_hidden: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct FileSearchInput {
+    query: String,
+    root_path: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct GrepFilesInput {
+    pattern: String,
+    root_path: Option<String>,
+    limit: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -240,6 +269,26 @@ struct WebRunStepResult {
     output: String,
 }
 
+#[derive(serde::Serialize)]
+struct DirectoryEntryItem {
+    name: String,
+    path: String,
+    is_dir: bool,
+}
+
+#[derive(serde::Serialize)]
+struct FileSearchItem {
+    name: String,
+    path: String,
+}
+
+#[derive(serde::Serialize)]
+struct GrepMatchItem {
+    path: String,
+    line_no: usize,
+    line: String,
+}
+
 /// 读取文件工具。
 pub struct ReadFileTool;
 /// 写入文件工具。
@@ -336,6 +385,146 @@ impl ToolHandler for WriteFileTool {
             (None, None) => Err(anyhow!("write_file 缺少 content 或 replace_range")),
             (Some(_), Some(_)) => unreachable!("前置冲突检查已覆盖该分支"),
         }
+    }
+}
+
+pub struct EditFileTool;
+pub struct ListDirTool;
+pub struct FileSearchTool;
+pub struct GrepFilesTool;
+
+#[async_trait]
+impl ToolHandler for EditFileTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: EditFileInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("edit_file 参数非法：{}", error))?;
+        let path = resolve_path(&context.workspace_root, &input.path);
+        let original = read_optional_utf8(&path)?
+            .ok_or_else(|| anyhow!("目标文件不存在：{}", path.display()))?;
+
+        if input.old_text.is_empty() {
+            return Err(anyhow!("edit_file 的 old_text 不能为空"));
+        }
+        if !original.contains(&input.old_text) {
+            return Err(anyhow!("未在目标文件中找到待替换内容：{}", path.display()));
+        }
+
+        let replaced = if input.replace_all.unwrap_or(false) {
+            original.replace(&input.old_text, &input.new_text)
+        } else {
+            original.replacen(&input.old_text, &input.new_text, 1)
+        };
+        write_utf8(&path, &replaced)?;
+        Ok(format!("已更新文件：{}", path.display()))
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ListDirTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: ListDirInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("list_dir 参数非法：{}", error))?;
+        let target = input
+            .path
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+        let include_hidden = input.include_hidden.unwrap_or(false);
+        let entries = std::fs::read_dir(&target)
+            .with_context(|| format!("读取目录失败：{}", target.display()))?;
+
+        let mut items = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !include_hidden && name.starts_with('.') {
+                continue;
+            }
+            let metadata = entry.metadata()?;
+            items.push(DirectoryEntryItem {
+                name,
+                path: entry.path().to_string_lossy().to_string(),
+                is_dir: metadata.is_dir(),
+            });
+        }
+
+        items.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(serde_json::to_string_pretty(&items)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for FileSearchTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: FileSearchInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("file_search 参数非法：{}", error))?;
+        if input.query.trim().is_empty() {
+            return Err(anyhow!("file_search 的 query 不能为空"));
+        }
+
+        let root = input
+            .root_path
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+        let query = input.query.to_ascii_lowercase();
+        let limit = input.limit.unwrap_or(50);
+        let mut items = Vec::new();
+
+        for entry in walkdir::WalkDir::new(&root).into_iter().filter_map(Result::ok) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.to_ascii_lowercase().contains(&query) {
+                items.push(FileSearchItem {
+                    name,
+                    path: entry.path().to_string_lossy().to_string(),
+                });
+                if items.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        Ok(serde_json::to_string_pretty(&items)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for GrepFilesTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: GrepFilesInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("grep_files 参数非法：{}", error))?;
+        let regex =
+            Regex::new(&input.pattern).map_err(|error| anyhow!("grep_files 正则非法：{}", error))?;
+        let root = input
+            .root_path
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+        let limit = input.limit.unwrap_or(100);
+        let mut matches = Vec::new();
+
+        for entry in walkdir::WalkDir::new(&root).into_iter().filter_map(Result::ok) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let Some(content) = read_optional_utf8(entry.path())? else {
+                continue;
+            };
+            for (index, line) in content.lines().enumerate() {
+                if regex.is_match(line) {
+                    matches.push(GrepMatchItem {
+                        path: entry.path().to_string_lossy().to_string(),
+                        line_no: index + 1,
+                        line: line.to_string(),
+                    });
+                    if matches.len() >= limit {
+                        return Ok(serde_json::to_string_pretty(&matches)?);
+                    }
+                }
+            }
+        }
+
+        Ok(serde_json::to_string_pretty(&matches)?)
     }
 }
 
