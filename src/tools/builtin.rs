@@ -10,7 +10,7 @@ use reqwest::Client;
 use reqwest::Url;
 use scraper::{Html, Selector};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::process::{Child, ChildStdin, ChildStdout};
@@ -64,6 +64,36 @@ struct GrepFilesInput {
     pattern: String,
     root_path: Option<String>,
     limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct DiagnosticsInput {
+    root_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReviewInput {
+    root_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProjectMapInput {
+    root_path: Option<String>,
+    max_depth: Option<usize>,
+    max_entries: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct ValidateDataInput {
+    data: Value,
+    required_fields: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RunTestsInput {
+    command: Option<String>,
+    working_directory: Option<String>,
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -289,6 +319,13 @@ struct GrepMatchItem {
     line: String,
 }
 
+#[derive(serde::Serialize)]
+struct ProjectMapItem {
+    path: String,
+    is_dir: bool,
+    depth: usize,
+}
+
 /// 读取文件工具。
 pub struct ReadFileTool;
 /// 写入文件工具。
@@ -392,6 +429,11 @@ pub struct EditFileTool;
 pub struct ListDirTool;
 pub struct FileSearchTool;
 pub struct GrepFilesTool;
+pub struct DiagnosticsTool;
+pub struct ReviewTool;
+pub struct ProjectMapTool;
+pub struct ValidateDataTool;
+pub struct RunTestsTool;
 
 #[async_trait]
 impl ToolHandler for EditFileTool {
@@ -469,7 +511,10 @@ impl ToolHandler for FileSearchTool {
         let limit = input.limit.unwrap_or(50);
         let mut items = Vec::new();
 
-        for entry in walkdir::WalkDir::new(&root).into_iter().filter_map(Result::ok) {
+        for entry in walkdir::WalkDir::new(&root)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -494,8 +539,8 @@ impl ToolHandler for GrepFilesTool {
     async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
         let input: GrepFilesInput = serde_json::from_value(input)
             .map_err(|error| anyhow!("grep_files 参数非法：{}", error))?;
-        let regex =
-            Regex::new(&input.pattern).map_err(|error| anyhow!("grep_files 正则非法：{}", error))?;
+        let regex = Regex::new(&input.pattern)
+            .map_err(|error| anyhow!("grep_files 正则非法：{}", error))?;
         let root = input
             .root_path
             .map(|value| resolve_path(&context.workspace_root, &value))
@@ -503,7 +548,10 @@ impl ToolHandler for GrepFilesTool {
         let limit = input.limit.unwrap_or(100);
         let mut matches = Vec::new();
 
-        for entry in walkdir::WalkDir::new(&root).into_iter().filter_map(Result::ok) {
+        for entry in walkdir::WalkDir::new(&root)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -525,6 +573,138 @@ impl ToolHandler for GrepFilesTool {
         }
 
         Ok(serde_json::to_string_pretty(&matches)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for DiagnosticsTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: DiagnosticsInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("diagnostics 参数非法：{}", error))?;
+        let root = input
+            .root_path
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+        let git_status = run_shell_command(
+            &context.shell_program,
+            "git status --short --branch",
+            &root,
+            10_000,
+        )
+        .await
+        .unwrap_or_else(|error| format!("Git 状态不可用：{}", error));
+
+        Ok(serde_json::to_string_pretty(&json!({
+            "workspace_root": root.to_string_lossy(),
+            "session_dir": context.session_dir.to_string_lossy(),
+            "shell_program": context.shell_program,
+            "git_status": git_status
+        }))?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ReviewTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: ReviewInput =
+            serde_json::from_value(input).map_err(|error| anyhow!("review 参数非法：{}", error))?;
+        let root = input
+            .root_path
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+
+        let status =
+            run_shell_command(&context.shell_program, "git status --short", &root, 10_000).await?;
+        let diff =
+            run_shell_command(&context.shell_program, "git diff --stat", &root, 10_000).await?;
+        Ok(format!(
+            "Git 状态摘要：\n{}\n\nGit 变更统计：\n{}",
+            status, diff
+        ))
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ProjectMapTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: ProjectMapInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("project_map 参数非法：{}", error))?;
+        let root = input
+            .root_path
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+        let max_depth = input.max_depth.unwrap_or(3);
+        let max_entries = input.max_entries.unwrap_or(200);
+        let mut items = Vec::new();
+
+        for entry in walkdir::WalkDir::new(&root)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            let depth = entry.depth();
+            if depth == 0 || depth > max_depth {
+                continue;
+            }
+            let relative = entry
+                .path()
+                .strip_prefix(&root)
+                .unwrap_or(entry.path())
+                .to_string_lossy()
+                .to_string();
+            items.push(ProjectMapItem {
+                path: relative,
+                is_dir: entry.file_type().is_dir(),
+                depth,
+            });
+            if items.len() >= max_entries {
+                break;
+            }
+        }
+
+        Ok(serde_json::to_string_pretty(&items)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ValidateDataTool {
+    async fn handle(&self, input: Value, _context: &ToolExecutionContext) -> Result<String> {
+        let input: ValidateDataInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("validate_data 参数非法：{}", error))?;
+        let object = input
+            .data
+            .as_object()
+            .ok_or_else(|| anyhow!("validate_data 的 data 必须是 JSON 对象"))?;
+        let missing_fields = input
+            .required_fields
+            .into_iter()
+            .filter(|field| {
+                !object.contains_key(field) || object.get(field).is_some_and(Value::is_null)
+            })
+            .collect::<Vec<_>>();
+        Ok(serde_json::to_string_pretty(&json!({
+            "valid": missing_fields.is_empty(),
+            "missing_fields": missing_fields
+        }))?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for RunTestsTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: RunTestsInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("run_tests 参数非法：{}", error))?;
+        let command = input.command.unwrap_or_else(|| "cargo test".to_string());
+        let working_directory = input
+            .working_directory
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+        run_shell_command(
+            &context.shell_program,
+            &command,
+            &working_directory,
+            input.timeout_ms.unwrap_or(120_000),
+        )
+        .await
     }
 }
 

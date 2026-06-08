@@ -11,11 +11,12 @@ use crate::domain::ToolRiskLevel;
 use crate::skill::manager::SkillManager;
 use crate::tools::builtin::{
     AgentCloseTool, AgentEvalTool, AgentOpenTool, AutomationCreateTool, AutomationRunOnceTool,
-    CallMcpTool, ConnectMcpServerTool, DiscoverMcpServersTool, EditFileTool, FetchUrlTool,
-    FileSearchTool, GithubGetTool, GrepFilesTool, HandleReadTool, ListDirTool, LoadSkillTool,
-    PlanWriteTool, ReadFileTool, ReadToolResultTool, RetrieveToolResultTool, RlmCloseTool,
-    RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, TaskCreateTool, TaskRunTool,
-    WebRunTool, WebSearchTool, WriteFileTool,
+    CallMcpTool, ConnectMcpServerTool, DiagnosticsTool, DiscoverMcpServersTool, EditFileTool,
+    FetchUrlTool, FileSearchTool, GithubGetTool, GrepFilesTool, HandleReadTool, ListDirTool,
+    LoadSkillTool, PlanWriteTool, ProjectMapTool, ReadFileTool, ReadToolResultTool,
+    RetrieveToolResultTool, ReviewTool, RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool,
+    RunShellTool, RunTestsTool, TaskCreateTool, TaskRunTool, ValidateDataTool, WebRunTool,
+    WebSearchTool, WriteFileTool,
 };
 
 /// 工具定义。
@@ -205,6 +206,91 @@ impl ToolRegistry {
                 ToolRiskLevel::ReadOnly,
             ),
             Arc::new(GrepFilesTool),
+        );
+        registry.register(
+            tool_definition(
+                "diagnostics",
+                "收集工作区、会话目录、Git 状态等诊断信息。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "root_path": { "type": "string", "description": "可选诊断根目录" }
+                    },
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(DiagnosticsTool),
+        );
+        registry.register(
+            tool_definition(
+                "review",
+                "返回本地 Git 变更摘要，作为评审输入。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "root_path": { "type": "string", "description": "可选 Git 根目录" }
+                    },
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(ReviewTool),
+        );
+        registry.register(
+            tool_definition(
+                "project_map",
+                "生成项目树摘要。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "root_path": { "type": "string", "description": "可选项目根目录" },
+                        "max_depth": { "type": "integer", "description": "可选最大深度" },
+                        "max_entries": { "type": "integer", "description": "可选最大条目数" }
+                    },
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(ProjectMapTool),
+        );
+        registry.register(
+            tool_definition(
+                "validate_data",
+                "校验 JSON 与必填字段。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "data": { "type": "object", "description": "待校验 JSON 对象" },
+                        "required_fields": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "必填字段列表"
+                        }
+                    },
+                    "required": ["data", "required_fields"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(ValidateDataTool),
+        );
+        registry.register(
+            tool_definition(
+                "run_tests",
+                "执行测试命令。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "可选测试命令，默认 cargo test" },
+                        "working_directory": { "type": "string", "description": "可选执行目录" },
+                        "timeout_ms": { "type": "integer", "description": "可选超时时间" }
+                    },
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Execute,
+            ),
+            Arc::new(RunTestsTool),
         );
         registry.register(
             tool_definition(
