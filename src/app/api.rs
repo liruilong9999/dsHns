@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::settings::Settings;
 use crate::domain::{
-    AgentInstance, DeletionAudit, Session, SessionStatusSnapshot, ToolCallRecord,
-    ToolResultRecord, WorkingMemoryEntry, WorkspaceDirectory,
+    AgentInstance, DeletionAudit, Session, SessionStatusSnapshot, ToolCallRecord, ToolResultRecord,
+    WorkingMemoryEntry, WorkspaceDirectory,
 };
 use crate::ipc::bus::EventBus;
 use crate::ipc::events::IpcEvent;
