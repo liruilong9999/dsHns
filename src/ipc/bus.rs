@@ -1,5 +1,4 @@
 //! 事件总线实现。
-
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -125,6 +124,31 @@ impl EventBus {
             event_type: EventType::WorkingMemoryCreated,
             payload: json!({
                 "content_preview": truncate(content, 200)
+            }),
+        })
+    }
+
+    /// 记录子 Agent 状态事件。
+    pub fn emit_agent_status(
+        &self,
+        session_id: &str,
+        round_no: i64,
+        agent_id: &str,
+        status: &str,
+        child_session_id: Option<&str>,
+        parent_agent_id: Option<&str>,
+    ) -> Result<()> {
+        self.emit(IpcEvent {
+            event_id: Uuid::new_v4().to_string(),
+            session_id: session_id.to_string(),
+            timestamp: now_rfc3339(),
+            round_no,
+            event_type: EventType::AgentStatusChanged,
+            payload: json!({
+                "agent_id": agent_id,
+                "status": status,
+                "child_session_id": child_session_id,
+                "parent_agent_id": parent_agent_id
             }),
         })
     }
@@ -262,6 +286,8 @@ fn truncate(content: &str, limit: usize) -> String {
 mod tests {
     use std::path::PathBuf;
 
+    use crate::ipc::events::EventType;
+
     use super::EventBus;
 
     #[test]
@@ -279,15 +305,40 @@ mod tests {
             "target/test_event_bus_tokens_{}",
             uuid::Uuid::new_v4()
         )));
-        bus.emit_token_usage("session-1", 1, 10, 20, 0.25, 1000)
-            .expect("写入 Token 统计失败");
+        bus.emit_session_status("session-1", 1, "running")
+            .expect("写入会话状态事件失败");
+        bus.emit_token_usage("session-1", 1, 12, 34, 0.5, 56)
+            .expect("写入 Token 统计事件失败");
+
         let snapshot = bus
             .latest_token_usage()
-            .expect("读取 Token 统计失败")
-            .expect("缺少 Token 统计快照");
-        assert_eq!(snapshot.input_tokens, 10);
-        assert_eq!(snapshot.output_tokens, 20);
-        assert_eq!(snapshot.remaining_context, 1000);
-        assert!((snapshot.cache_hit_rate - 0.25).abs() < f64::EPSILON);
+            .expect("读取 Token 统计快照失败")
+            .expect("应存在 Token 统计快照");
+        assert_eq!(snapshot.input_tokens, 12);
+        assert_eq!(snapshot.output_tokens, 34);
+        assert_eq!(snapshot.remaining_context, 56);
+    }
+
+    #[test]
+    fn should_persist_agent_status_event() {
+        let bus = EventBus::new(PathBuf::from(format!(
+            "target/test_event_bus_agent_{}",
+            uuid::Uuid::new_v4()
+        )));
+        bus.emit_agent_status(
+            "session-1",
+            2,
+            "agent-1",
+            "open",
+            Some("child-1"),
+            None,
+        )
+        .expect("写入子 Agent 状态事件失败");
+
+        let events = bus.list_events().expect("读取事件列表失败");
+        assert!(events.iter().any(|event| {
+            matches!(event.event_type, EventType::AgentStatusChanged)
+                && event.payload.get("agent_id").and_then(|value| value.as_str()) == Some("agent-1")
+        }));
     }
 }

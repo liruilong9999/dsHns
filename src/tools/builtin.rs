@@ -19,7 +19,9 @@ use uuid::Uuid;
 
 use crate::agent::manager::SubagentManager;
 use crate::domain::ReplaceRange;
+use crate::ipc::bus::EventBus;
 use crate::mcp::client::McpClientManager;
+use crate::session::snapshot::read_session_ini;
 use crate::tools::registry::{ToolExecutionContext, ToolHandler};
 use crate::utils::fs::{read_optional_utf8, replace_file_range, write_utf8};
 
@@ -753,6 +755,15 @@ impl ToolHandler for AgentOpenTool {
             input.task_spec,
             input.parent_agent_id,
         )?;
+        let (session_id, round_no) = current_session_event_context(&context.session_dir);
+        EventBus::new(context.session_dir.clone()).emit_agent_status(
+            &session_id,
+            round_no,
+            &agent.id,
+            "open",
+            Some(&agent.child_session_id),
+            agent.parent_agent_id.as_deref(),
+        )?;
         Ok(serde_json::to_string_pretty(&agent)?)
     }
 }
@@ -763,7 +774,27 @@ impl ToolHandler for AgentEvalTool {
         let input: AgentEvalInput = serde_json::from_value(input)
             .map_err(|error| anyhow!("agent_eval 参数非法：{}", error))?;
         let manager = SubagentManager::new(context.session_dir.clone());
+        let (session_id, round_no) = current_session_event_context(&context.session_dir);
+        EventBus::new(context.session_dir.clone()).emit_agent_status(
+            &session_id,
+            round_no,
+            &input.agent_id,
+            "running",
+            None,
+            None,
+        )?;
         let result = manager.eval(&input.agent_id, input.input)?;
+        let child_session_id = result
+            .get("child_session_id")
+            .and_then(serde_json::Value::as_str);
+        EventBus::new(context.session_dir.clone()).emit_agent_status(
+            &session_id,
+            round_no,
+            &input.agent_id,
+            "done",
+            child_session_id,
+            None,
+        )?;
         Ok(serde_json::to_string_pretty(&result)?)
     }
 }
@@ -775,6 +806,15 @@ impl ToolHandler for AgentCloseTool {
             .map_err(|error| anyhow!("agent_close 参数非法：{}", error))?;
         let manager = SubagentManager::new(context.session_dir.clone());
         let result = manager.close(&input.agent_id)?;
+        let (session_id, round_no) = current_session_event_context(&context.session_dir);
+        EventBus::new(context.session_dir.clone()).emit_agent_status(
+            &session_id,
+            round_no,
+            &result.id,
+            "closed",
+            Some(&result.child_session_id),
+            result.parent_agent_id.as_deref(),
+        )?;
         Ok(serde_json::to_string_pretty(&result)?)
     }
 }
@@ -939,6 +979,20 @@ fn resolve_path(workspace_root: &Path, raw_path: &str) -> PathBuf {
         path.to_path_buf()
     } else {
         workspace_root.join(path)
+    }
+}
+
+fn current_session_event_context(session_dir: &Path) -> (String, i64) {
+    match read_session_ini(session_dir) {
+        Ok(session) => (session.id, session.round + 1),
+        Err(_) => (
+            session_dir
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("unknown-session")
+                .to_string(),
+            1,
+        ),
     }
 }
 
