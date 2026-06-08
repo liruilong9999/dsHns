@@ -12,11 +12,11 @@ use crate::skill::manager::SkillManager;
 use crate::tools::builtin::{
     AgentCloseTool, AgentEvalTool, AgentOpenTool, AutomationCreateTool, AutomationRunOnceTool,
     CallMcpTool, ConnectMcpServerTool, DiagnosticsTool, DiscoverMcpServersTool, EditFileTool,
-    FetchUrlTool, FileSearchTool, GithubGetTool, GrepFilesTool, HandleReadTool, ListDirTool,
-    LoadSkillTool, PlanWriteTool, ProjectMapTool, ReadFileTool, ReadToolResultTool,
-    RetrieveToolResultTool, ReviewTool, RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool,
-    RunShellTool, RunTestsTool, TaskCreateTool, TaskRunTool, ValidateDataTool, WebRunTool,
-    WebSearchTool, WriteFileTool,
+    FetchUrlTool, FileSearchTool, FimEditTool, GithubGetTool, GrepFilesTool, HandleReadTool,
+    ListDirTool, LoadSkillTool, NoteTool, NotifyTool, PlanWriteTool, ProjectMapTool, ReadFileTool,
+    ReadToolResultTool, RecallArchiveTool, RememberTool, RetrieveToolResultTool, ReviewTool,
+    RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, RunTestsTool,
+    TaskCreateTool, TaskRunTool, ValidateDataTool, WebRunTool, WebSearchTool, WriteFileTool,
 };
 
 /// 工具定义。
@@ -291,6 +291,91 @@ impl ToolRegistry {
                 ToolRiskLevel::Execute,
             ),
             Arc::new(RunTestsTool),
+        );
+        registry.register(
+            tool_definition(
+                "note",
+                "记录一次性备注。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "可选备注标题" },
+                        "content": { "type": "string", "description": "备注正文" }
+                    },
+                    "required": ["content"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Write,
+            ),
+            Arc::new(NoteTool),
+        );
+        registry.register(
+            tool_definition(
+                "remember",
+                "写入长期记忆。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "key": { "type": "string", "description": "可选记忆键" },
+                        "content": { "type": "string", "description": "记忆正文" }
+                    },
+                    "required": ["content"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Write,
+            ),
+            Arc::new(RememberTool),
+        );
+        registry.register(
+            tool_definition(
+                "recall_archive",
+                "搜索备注与记忆归档。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "搜索关键字" },
+                        "limit": { "type": "integer", "description": "可选返回数量上限" }
+                    },
+                    "required": ["query"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(RecallArchiveTool),
+        );
+        registry.register(
+            tool_definition(
+                "notify",
+                "终端通知。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "message": { "type": "string", "description": "通知内容" }
+                    },
+                    "required": ["message"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Write,
+            ),
+            Arc::new(NotifyTool),
+        );
+        registry.register(
+            tool_definition(
+                "fim_edit",
+                "基于旧文本与新文本做一次替换编辑。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "目标文件路径" },
+                        "old_text": { "type": "string", "description": "待替换旧文本" },
+                        "new_text": { "type": "string", "description": "新文本" }
+                    },
+                    "required": ["path", "old_text", "new_text"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Write,
+            ),
+            Arc::new(FimEditTool),
         );
         registry.register(
             tool_definition(

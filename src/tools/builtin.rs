@@ -97,6 +97,36 @@ struct RunTestsInput {
 }
 
 #[derive(Deserialize)]
+struct NoteInput {
+    title: Option<String>,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct RememberInput {
+    key: Option<String>,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct RecallArchiveInput {
+    query: String,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct NotifyInput {
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct FimEditInput {
+    path: String,
+    old_text: String,
+    new_text: String,
+}
+
+#[derive(Deserialize)]
 struct RunShellInput {
     command: String,
     working_directory: Option<String>,
@@ -434,6 +464,11 @@ pub struct ReviewTool;
 pub struct ProjectMapTool;
 pub struct ValidateDataTool;
 pub struct RunTestsTool;
+pub struct NoteTool;
+pub struct RememberTool;
+pub struct RecallArchiveTool;
+pub struct NotifyTool;
+pub struct FimEditTool;
 
 #[async_trait]
 impl ToolHandler for EditFileTool {
@@ -705,6 +740,113 @@ impl ToolHandler for RunTestsTool {
             input.timeout_ms.unwrap_or(120_000),
         )
         .await
+    }
+}
+
+#[async_trait]
+impl ToolHandler for NoteTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: NoteInput =
+            serde_json::from_value(input).map_err(|error| anyhow!("note 参数非法：{}", error))?;
+        let path = context
+            .session_dir
+            .join(".tools")
+            .join("memory")
+            .join("notes.json");
+        let mut items: Vec<Value> = load_json_array(&path)?;
+        items.push(json!({
+            "id": Uuid::new_v4().to_string(),
+            "title": input.title,
+            "content": input.content,
+            "created_at": crate::utils::time::now_rfc3339()
+        }));
+        write_utf8(&path, &serde_json::to_string_pretty(&items)?)?;
+        Ok("已记录一次性备注。".to_string())
+    }
+}
+
+#[async_trait]
+impl ToolHandler for RememberTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: RememberInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("remember 参数非法：{}", error))?;
+        let path = context
+            .session_dir
+            .join(".tools")
+            .join("memory")
+            .join("archive.json");
+        let mut items: Vec<Value> = load_json_array(&path)?;
+        items.push(json!({
+            "id": Uuid::new_v4().to_string(),
+            "kind": "memory",
+            "key": input.key,
+            "content": input.content,
+            "created_at": crate::utils::time::now_rfc3339()
+        }));
+        write_utf8(&path, &serde_json::to_string_pretty(&items)?)?;
+        Ok("已写入长期记忆。".to_string())
+    }
+}
+
+#[async_trait]
+impl ToolHandler for RecallArchiveTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: RecallArchiveInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("recall_archive 参数非法：{}", error))?;
+        if input.query.trim().is_empty() {
+            return Err(anyhow!("recall_archive 的 query 不能为空"));
+        }
+
+        let notes_path = context
+            .session_dir
+            .join(".tools")
+            .join("memory")
+            .join("notes.json");
+        let archive_path = context
+            .session_dir
+            .join(".tools")
+            .join("memory")
+            .join("archive.json");
+        let mut items: Vec<Value> = load_json_array(&notes_path)?;
+        items.extend(load_json_array::<Value>(&archive_path)?);
+        let query = input.query.to_ascii_lowercase();
+        let limit = input.limit.unwrap_or(20);
+        let matched = items
+            .into_iter()
+            .filter(|item| item.to_string().to_ascii_lowercase().contains(&query))
+            .take(limit)
+            .collect::<Vec<_>>();
+        Ok(serde_json::to_string_pretty(&matched)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for NotifyTool {
+    async fn handle(&self, input: Value, _context: &ToolExecutionContext) -> Result<String> {
+        let input: NotifyInput =
+            serde_json::from_value(input).map_err(|error| anyhow!("notify 参数非法：{}", error))?;
+        println!("通知：{}", input.message);
+        Ok("已发送终端通知。".to_string())
+    }
+}
+
+#[async_trait]
+impl ToolHandler for FimEditTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: FimEditInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("fim_edit 参数非法：{}", error))?;
+        let path = resolve_path(&context.workspace_root, &input.path);
+        let original = read_optional_utf8(&path)?
+            .ok_or_else(|| anyhow!("目标文件不存在：{}", path.display()))?;
+        if input.old_text.is_empty() {
+            return Err(anyhow!("fim_edit 的 old_text 不能为空"));
+        }
+        if !original.contains(&input.old_text) {
+            return Err(anyhow!("未在目标文件中找到待替换内容：{}", path.display()));
+        }
+        let replaced = original.replacen(&input.old_text, &input.new_text, 1);
+        write_utf8(&path, &replaced)?;
+        Ok(format!("已完成 FIM 替换编辑：{}", path.display()))
     }
 }
 
