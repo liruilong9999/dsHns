@@ -18,7 +18,8 @@ use crate::tools::builtin::{
     NoteTool, NotifyTool, PlanWriteTool, ProjectMapTool, ReadFileTool, ReadToolResultTool,
     RecallArchiveTool, RememberTool, RequestUserInputTool, RetrieveToolResultTool, ReviewTool,
     RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, RunTestsTool,
-    TaskCreateTool, TaskRunTool, ValidateDataTool, WebRunTool, WebSearchTool, WriteFileTool,
+    TaskCreateTool, TaskRunTool, TaskShellStartTool, TaskShellWaitTool, ValidateDataTool,
+    WebRunTool, WebSearchTool, WriteFileTool,
 };
 
 /// 工具定义。
@@ -986,6 +987,41 @@ impl ToolRegistry {
                 ToolRiskLevel::Execute,
             ),
             Arc::new(TaskRunTool),
+        );
+        registry.register(
+            tool_definition(
+                "task_shell_start",
+                "绑定任务到后台命令执行。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "task_id": { "type": "string", "description": "任务标识" },
+                        "working_directory": { "type": "string", "description": "可选执行目录" }
+                    },
+                    "required": ["task_id"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Execute,
+            ),
+            Arc::new(TaskShellStartTool),
+        );
+        registry.register(
+            tool_definition(
+                "task_shell_wait",
+                "等待任务绑定的后台命令执行结果。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "task_id": { "type": "string", "description": "任务标识" },
+                        "idle_timeout_ms": { "type": "integer", "description": "空闲超时时间" },
+                        "max_lines": { "type": "integer", "description": "可选最大读取行数" }
+                    },
+                    "required": ["task_id"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Execute,
+            ),
+            Arc::new(TaskShellWaitTool),
         );
         registry.register(
             tool_definition(

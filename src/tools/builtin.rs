@@ -342,6 +342,19 @@ struct TaskRunInput {
 }
 
 #[derive(Deserialize)]
+struct TaskShellStartInput {
+    task_id: String,
+    working_directory: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TaskShellWaitInput {
+    task_id: String,
+    idle_timeout_ms: Option<u64>,
+    max_lines: Option<usize>,
+}
+
+#[derive(Deserialize)]
 struct AutomationCreateInput {
     name: String,
     kind: String,
@@ -1932,6 +1945,9 @@ impl ToolHandler for TaskCreateTool {
     }
 }
 
+pub struct TaskShellStartTool;
+pub struct TaskShellWaitTool;
+
 #[async_trait]
 impl ToolHandler for TaskRunTool {
     async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
@@ -1975,6 +1991,96 @@ impl ToolHandler for TaskRunTool {
         }
 
         records[index].status = "done".to_string();
+        write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+        Ok(output)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for TaskShellStartTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: TaskShellStartInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("task_shell_start 参数非法：{}", error))?;
+        let path = context
+            .session_dir
+            .join(".tools")
+            .join("task")
+            .join("tasks.json");
+        let mut records = load_json_array::<TaskRecord>(&path)?;
+        let index = records
+            .iter()
+            .position(|record| record.id == input.task_id)
+            .ok_or_else(|| anyhow!("未找到任务：{}", input.task_id))?;
+
+        let exec_tool = ExecShellTool;
+        let payload = if let Some(working_directory) = input.working_directory {
+            json!({
+                "command": records[index].command,
+                "working_directory": working_directory
+            })
+        } else {
+            json!({
+                "command": records[index].command
+            })
+        };
+        let result = exec_tool.handle(payload, context).await?;
+        let payload: Value = serde_json::from_str(&result)
+            .map_err(|error| anyhow!("解析 task_shell_start 结果失败：{}", error))?;
+        let process_id = payload
+            .get("process_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("task_shell_start 缺少 process_id"))?
+            .to_string();
+
+        records[index].status = "running".to_string();
+        records[index].bound_process_id = Some(process_id);
+        write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+        Ok(result)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for TaskShellWaitTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: TaskShellWaitInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("task_shell_wait 参数非法：{}", error))?;
+        let path = context
+            .session_dir
+            .join(".tools")
+            .join("task")
+            .join("tasks.json");
+        let mut records = load_json_array::<TaskRecord>(&path)?;
+        let index = records
+            .iter()
+            .position(|record| record.id == input.task_id)
+            .ok_or_else(|| anyhow!("未找到任务：{}", input.task_id))?;
+        let process_id = records[index]
+            .bound_process_id
+            .clone()
+            .ok_or_else(|| anyhow!("当前任务未绑定后台进程：{}", input.task_id))?;
+
+        let wait_tool = ExecShellWaitTool;
+        let output = wait_tool
+            .handle(
+                json!({
+                    "process_id": process_id,
+                    "idle_timeout_ms": input.idle_timeout_ms,
+                    "max_lines": input.max_lines
+                }),
+                context,
+            )
+            .await?;
+        let cancel_tool = ExecShellCancelTool;
+        let _ = cancel_tool
+            .handle(
+                json!({
+                    "process_id": process_id
+                }),
+                context,
+            )
+            .await;
+        records[index].status = "done".to_string();
+        records[index].bound_process_id = None;
         write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
         Ok(output)
     }
