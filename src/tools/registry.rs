@@ -946,9 +946,10 @@ impl ToolRegistry {
                     "type": "object",
                     "properties": {
                         "plan_type": { "type": "string", "description": "计划类型，例如 implementation 或 review" },
-                        "content": { "type": "string", "description": "计划正文内容" }
+                        "content": { "description": "计划正文内容，可为字符串或 JSON" },
+                        "operation": { "type": "string", "description": "write、append、update、list" }
                     },
-                    "required": ["plan_type", "content"],
+                    "required": ["plan_type"],
                     "additionalProperties": false
                 }),
                 ToolRiskLevel::Write,

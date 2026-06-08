@@ -24,7 +24,7 @@ use crate::ipc::bus::EventBus;
 use crate::mcp::client::McpClientManager;
 use crate::session::snapshot::read_session_ini;
 use crate::tools::registry::{ToolExecutionContext, ToolHandler};
-use crate::utils::fs::{read_optional_utf8, replace_file_range, write_utf8};
+use crate::utils::fs::{ensure_directory, read_optional_utf8, replace_file_range, write_utf8};
 
 #[derive(Deserialize)]
 struct ReadFileInput {
@@ -325,7 +325,8 @@ struct AgentCloseInput {
 #[derive(Deserialize)]
 struct PlanWriteInput {
     plan_type: String,
-    content: String,
+    content: Option<Value>,
+    operation: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1947,13 +1948,43 @@ impl ToolHandler for PlanWriteTool {
     async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
         let input: PlanWriteInput = serde_json::from_value(input)
             .map_err(|error| anyhow!("plan_write 参数非法：{}", error))?;
-        let path = context
-            .session_dir
-            .join(".tools")
-            .join("plan")
-            .join(format!("{}.md", sanitize_name(&input.plan_type)));
-        write_utf8(&path, &input.content)?;
-        Ok(format!("计划文件已写入：{}", path.display()))
+        let path = plan_file_path(&context.session_dir, &input.plan_type);
+        let operation = input.operation.as_deref().unwrap_or("write");
+
+        match operation {
+            "list" => {
+                let plan_dir = context.session_dir.join(".tools").join("plan");
+                ensure_directory(&plan_dir)?;
+                let mut items = std::fs::read_dir(&plan_dir)?
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.file_name().to_string_lossy().to_string())
+                    .collect::<Vec<_>>();
+                items.sort();
+                Ok(serde_json::to_string_pretty(&items)?)
+            }
+            "write" => {
+                let content = input
+                    .content
+                    .ok_or_else(|| anyhow!("plan_write 在 write 模式下缺少 content"))?;
+                write_plan_value(&path, &content)?;
+                Ok(format!("计划文件已写入：{}", path.display()))
+            }
+            "append" => {
+                let content = input
+                    .content
+                    .ok_or_else(|| anyhow!("plan_write 在 append 模式下缺少 content"))?;
+                append_plan_value(&path, &content)?;
+                Ok(format!("计划文件已追加：{}", path.display()))
+            }
+            "update" => {
+                let content = input
+                    .content
+                    .ok_or_else(|| anyhow!("plan_write 在 update 模式下缺少 content"))?;
+                update_plan_value(&path, &content)?;
+                Ok(format!("计划文件已更新：{}", path.display()))
+            }
+            _ => Err(anyhow!("plan_write 不支持的 operation：{}", operation)),
+        }
     }
 }
 
@@ -2470,6 +2501,66 @@ fn sanitize_name(name: &str) -> String {
             }
         })
         .collect()
+}
+
+fn plan_file_path(session_dir: &Path, plan_type: &str) -> PathBuf {
+    let filename = match plan_type {
+        "update_plan" | "checklist" | "todo" => format!("{}.json", plan_type),
+        _ => format!("{}.md", sanitize_name(plan_type)),
+    };
+    session_dir.join(".tools").join("plan").join(filename)
+}
+
+fn write_plan_value(path: &Path, content: &Value) -> Result<()> {
+    match content {
+        Value::String(text) => write_utf8(path, text),
+        _ => write_utf8(path, &serde_json::to_string_pretty(content)?),
+    }
+}
+
+fn append_plan_value(path: &Path, content: &Value) -> Result<()> {
+    let existing = read_optional_utf8(path)?;
+    if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+        let mut values: Vec<Value> = existing
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?
+            .unwrap_or_default();
+        values.push(content.clone());
+        write_utf8(path, &serde_json::to_string_pretty(&values)?)
+    } else {
+        let mut text = existing.unwrap_or_default();
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        let appendix = content
+            .as_str()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| serde_json::to_string_pretty(content).unwrap_or_default());
+        text.push_str(&appendix);
+        write_utf8(path, &text)
+    }
+}
+
+fn update_plan_value(path: &Path, content: &Value) -> Result<()> {
+    if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+        let existing = read_optional_utf8(path)?;
+        let mut value = existing
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?
+            .unwrap_or_else(|| json!({}));
+        if let (Some(target), Some(source)) = (value.as_object_mut(), content.as_object()) {
+            for (key, item) in source {
+                target.insert(key.clone(), item.clone());
+            }
+            write_utf8(path, &serde_json::to_string_pretty(&value)?)
+        } else {
+            write_plan_value(path, content)
+        }
+    } else {
+        write_plan_value(path, content)
+    }
 }
 
 fn automation_file_path(session_dir: &Path) -> PathBuf {
