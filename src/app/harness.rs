@@ -9,9 +9,10 @@ use crate::agent::loop_runner::{AgentLoopRunner, TurnOutcome};
 use crate::approval::manager::ApprovalManager;
 use crate::config::settings::Settings;
 use crate::domain::{
-    ApprovalMode, DeletionAudit, Session, SessionStatus, SessionStatusSnapshot, WorkspaceDirectory,
+    AgentInstance, ApprovalMode, DeletionAudit, Session, SessionStatus, SessionStatusSnapshot,
+    ToolCallRecord, ToolResultRecord, WorkingMemoryEntry, WorkspaceDirectory,
 };
-use crate::ipc::bus::EventBus;
+use crate::ipc::bus::{EventBus, TokenUsageSnapshot};
 use crate::ipc::events::IpcEvent;
 use crate::llm::client::LlmClient;
 use crate::persistence::sqlite::SqliteStore;
@@ -130,9 +131,7 @@ impl Harness {
     }
 
     /// 读取当前会话最近一次 Token 统计。
-    pub fn latest_current_token_usage(
-        &self,
-    ) -> Result<Option<crate::ipc::bus::TokenUsageSnapshot>> {
+    pub fn latest_current_token_usage(&self) -> Result<Option<TokenUsageSnapshot>> {
         let session = self
             .current_session
             .as_ref()
@@ -173,7 +172,7 @@ impl Harness {
     }
 
     /// 列出当前会话的工作记忆。
-    pub fn list_current_working_memories(&self) -> Result<Vec<crate::domain::WorkingMemoryEntry>> {
+    pub fn list_current_working_memories(&self) -> Result<Vec<WorkingMemoryEntry>> {
         let session = self
             .current_session
             .as_ref()
@@ -182,7 +181,7 @@ impl Harness {
     }
 
     /// 列出当前会话的子 Agent。
-    pub fn list_current_agents(&self) -> Result<Vec<crate::domain::AgentInstance>> {
+    pub fn list_current_agents(&self) -> Result<Vec<AgentInstance>> {
         let session = self
             .current_session
             .as_ref()
@@ -191,7 +190,7 @@ impl Harness {
     }
 
     /// 列出当前会话的工具调用记录。
-    pub fn list_current_tool_calls(&self) -> Result<Vec<crate::domain::ToolCallRecord>> {
+    pub fn list_current_tool_calls(&self) -> Result<Vec<ToolCallRecord>> {
         let session = self
             .current_session
             .as_ref()
@@ -200,7 +199,7 @@ impl Harness {
     }
 
     /// 列出当前会话的工具结果索引。
-    pub fn list_current_tool_results(&self) -> Result<Vec<crate::domain::ToolResultRecord>> {
+    pub fn list_current_tool_results(&self) -> Result<Vec<ToolResultRecord>> {
         let session = self
             .current_session
             .as_ref()
@@ -373,6 +372,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::domain::SessionStatus;
+    use crate::ipc::bus::EventBus;
 
     use super::Harness;
 
@@ -394,5 +394,28 @@ mod tests {
             harness.current_session().expect("当前会话不存在").status,
             SessionStatus::Cancelled
         );
+    }
+
+    #[test]
+    fn should_build_status_snapshot_from_latest_event() {
+        let workspace = PathBuf::from(format!(
+            "target/test_status_snapshot_workspace_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut harness = Harness::new(workspace).expect("创建主控器失败");
+        let session = harness
+            .create_session("demo")
+            .expect("创建会话失败")
+            .clone();
+        let bus = EventBus::new(session.session_dir.clone());
+        bus.emit_token_usage(&session.id, 1, 12, 34, 0.5, 2048)
+            .expect("写入 Token 统计失败");
+
+        let snapshot = harness.current_status_snapshot().expect("构建状态快照失败");
+        assert_eq!(snapshot.session.id, session.id);
+        assert_eq!(snapshot.input_tokens, 12);
+        assert_eq!(snapshot.output_tokens, 34);
+        assert!((snapshot.cache_hit_rate - 0.5).abs() < f64::EPSILON);
+        assert_eq!(snapshot.remaining_context, 2048);
     }
 }
