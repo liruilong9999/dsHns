@@ -1,5 +1,5 @@
 //! 会话快照读写逻辑。
-
+use std::fs;
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
@@ -14,6 +14,8 @@ use crate::utils::time::now_rfc3339;
 pub const SESSION_INI_NAME: &str = "session.ini";
 /// 消息快照文件名。
 pub const MEMORY_JSON_NAME: &str = "memory.json";
+/// 消息快照备份文件名。
+pub const MEMORY_JSON_BACKUP_NAME: &str = "memory.json.bak";
 /// 工具结果索引文件名。
 pub const TOOL_RESULT_INDEX_NAME: &str = "tool_results/index.json";
 /// 工作记忆文件名。
@@ -24,22 +26,10 @@ pub fn write_session_ini(session: &Session) -> Result<()> {
     ensure_directory(&session.session_dir)?;
     let mut ini = Ini::new();
     ini.set("session", "id", Some(session.id.clone()));
-    ini.set(
-        "session",
-        "directory_id",
-        Some(session.directory_id.clone()),
-    );
+    ini.set("session", "directory_id", Some(session.directory_id.clone()));
     ini.set("session", "name", Some(session.name.clone()));
-    ini.set(
-        "session",
-        "project_name",
-        Some(session.project_name.clone()),
-    );
-    ini.set(
-        "session",
-        "project_path",
-        Some(session.project_path.clone()),
-    );
+    ini.set("session", "project_name", Some(session.project_name.clone()));
+    ini.set("session", "project_path", Some(session.project_path.clone()));
     ini.set(
         "session",
         "working_directory",
@@ -56,22 +46,14 @@ pub fn write_session_ini(session: &Session) -> Result<()> {
         "status",
         Some(session.status.as_str().to_string()),
     );
-    ini.set(
-        "session",
-        "system_prompt",
-        Some(session.system_prompt.clone()),
-    );
+    ini.set("session", "system_prompt", Some(session.system_prompt.clone()));
     ini.set(
         "session",
         "stream_output",
         Some(session.stream_output.to_string()),
     );
     ini.set("state", "round", Some(session.round.to_string()));
-    ini.set(
-        "state",
-        "is_finished",
-        Some(session.is_finished.to_string()),
-    );
+    ini.set("state", "is_finished", Some(session.is_finished.to_string()));
     ini.set(
         "snapshot",
         "version",
@@ -179,8 +161,20 @@ pub fn read_session_ini(session_dir: &Path) -> Result<Session> {
 
 /// 写入 `memory.json` 快照。
 pub fn write_memory_json(session_dir: &Path, messages: &[Message]) -> Result<()> {
+    let target = session_dir.join(MEMORY_JSON_NAME);
+    if target.exists() {
+        let backup = session_dir.join(MEMORY_JSON_BACKUP_NAME);
+        fs::copy(&target, &backup).with_context(|| {
+            format!(
+                "备份 memory.json 失败：{} -> {}",
+                target.display(),
+                backup.display()
+            )
+        })?;
+    }
+
     let json = serde_json::to_string_pretty(messages)?;
-    write_utf8(&session_dir.join(MEMORY_JSON_NAME), &json)
+    write_utf8(&target, &json)
 }
 
 /// 读取 `memory.json` 快照。
@@ -210,8 +204,12 @@ pub fn write_working_memory(session_dir: &Path, content: &str) -> Result<()> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{read_session_ini, write_session_ini};
-    use crate::domain::{ApprovalMode, Session};
+    use super::{
+        read_session_ini, read_memory_json, write_memory_json, write_session_ini,
+        MEMORY_JSON_BACKUP_NAME,
+    };
+    use crate::domain::{ApprovalMode, Message, Session};
+    use crate::utils::fs::read_optional_utf8;
 
     #[test]
     fn should_write_and_read_session_ini() {
@@ -233,5 +231,21 @@ mod tests {
         let loaded = read_session_ini(&session_dir).expect("读取 session.ini 失败");
         assert_eq!(loaded.id, session.id);
         assert_eq!(loaded.name, session.name);
+    }
+
+    #[test]
+    fn should_backup_memory_json_before_overwrite() {
+        let session_dir = PathBuf::from("target/test_memory_backup");
+        write_memory_json(&session_dir, &[Message::user("first")]).expect("write first memory");
+        write_memory_json(&session_dir, &[Message::user("second")]).expect("write second memory");
+
+        let backup = read_optional_utf8(&session_dir.join(MEMORY_JSON_BACKUP_NAME))
+            .expect("read memory backup")
+            .expect("missing memory backup");
+        let current = read_memory_json(&session_dir).expect("read current memory");
+
+        assert!(backup.contains("first"));
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].content, "second");
     }
 }
