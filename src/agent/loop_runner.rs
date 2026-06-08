@@ -94,7 +94,12 @@ impl AgentLoopRunner {
                 .chat_completion(
                     &session.model,
                     &context.messages,
-                    &self.tool_registry.model_tools(),
+                    &self.tool_registry.model_tools_for_context(
+                        &build_tool_exposure_context(&context.messages),
+                        self.settings.enable_adaptive_tool_exposure,
+                        self.settings.allow_network,
+                        self.settings.allow_plugin_tool,
+                    ),
                     session.stream_output,
                 )
                 .await?;
@@ -214,4 +219,19 @@ fn model_context_window(model: &str) -> usize {
     } else {
         256_000
     }
+}
+
+fn build_tool_exposure_context(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .map(|message| {
+            let mut merged = message.content.clone();
+            if let Some(reasoning) = &message.reasoning_content {
+                merged.push(' ');
+                merged.push_str(reasoning);
+            }
+            merged
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

@@ -20,7 +20,7 @@ pub struct Settings {
     pub sessions_root: PathBuf,
     /// SQLite 数据库路径。
     pub database_path: PathBuf,
-    /// setting.ini 文件路径。
+    /// `setting.ini` 文件路径。
     pub setting_file: PathBuf,
     /// 默认模型名称。
     pub default_model: String,
@@ -48,6 +48,8 @@ pub struct Settings {
     pub skill_roots: Vec<PathBuf>,
     /// 单个 Skill 文件允许读取的最大字节数。
     pub max_skill_file_bytes: usize,
+    /// 是否启用自适应工具注入。
+    pub enable_adaptive_tool_exposure: bool,
     /// 是否允许网络工具。
     pub allow_network: bool,
     /// 是否允许 Shell 工具。
@@ -59,7 +61,7 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// 从工作区加载配置，不存在 setting.ini 时自动回退到默认值。
+    /// 从工作区加载配置，不存在 `setting.ini` 时自动回退到默认值。
     pub fn load(workspace_root: &Path) -> Result<Self> {
         let workspace_root = workspace_root.to_path_buf();
         let data_root = workspace_root.join(".dshns");
@@ -94,6 +96,7 @@ impl Settings {
             deepseek_base_url: "https://api.deepseek.com/chat/completions".to_string(),
             skill_roots: vec![workspace_root.join("skills"), home_skill_root],
             max_skill_file_bytes: 65_536,
+            enable_adaptive_tool_exposure: true,
             allow_network: true,
             allow_shell: false,
             allow_file_write: false,
@@ -158,6 +161,11 @@ impl Settings {
                 .flatten()
                 .map(|value| value as usize)
                 .unwrap_or(settings.max_skill_file_bytes);
+            settings.enable_adaptive_tool_exposure = ini
+                .getbool("compact", "enable_adaptive_tool_exposure")
+                .ok()
+                .flatten()
+                .unwrap_or(settings.enable_adaptive_tool_exposure);
             settings.default_approval_mode = parse_approval_mode(
                 ini.get("approval", "mode").as_deref(),
                 settings.default_approval_mode,
@@ -227,23 +235,28 @@ mod tests {
         assert_eq!(settings.default_model, "deepseek-v4-flash");
         assert!(settings.is_allowed_model("deepseek-v4-pro"));
         assert_eq!(settings.max_skill_file_bytes, 65_536);
+        assert!(settings.enable_adaptive_tool_exposure);
         assert!(settings.allow_network);
         assert!(!settings.allow_shell);
         assert!(!settings.allow_file_write);
     }
 
-    /// 验证可以从 approval 分组读取能力开关。
+    /// 验证可以从审批分组读取能力开关和自适应工具注入开关。
     #[test]
     fn should_load_approval_flags_from_ini() {
         let workspace = Path::new("target/test_settings_with_approval_flags");
         write_utf8(
             &workspace.join("setting.ini"),
-            "[approval]\nmode=1\nallow_network=false\nallow_shell=true\nallow_file_write=true\nallow_plugin_tool=true\n",
+            "[approval]\nmode=1\nallow_network=false\nallow_shell=true\nallow_file_write=true\nallow_plugin_tool=true\n[compact]\nenable_adaptive_tool_exposure=false\n",
         )
         .expect("写入 setting.ini 失败");
 
         let settings = Settings::load(workspace).expect("加载带审批开关的配置失败");
-        assert_eq!(settings.default_approval_mode, ApprovalMode::AutoApproveSafe);
+        assert_eq!(
+            settings.default_approval_mode,
+            ApprovalMode::AutoApproveSafe
+        );
+        assert!(!settings.enable_adaptive_tool_exposure);
         assert!(!settings.allow_network);
         assert!(settings.allow_shell);
         assert!(settings.allow_file_write);

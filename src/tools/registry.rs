@@ -1,5 +1,4 @@
 //! 工具注册表实现。
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -75,10 +74,10 @@ impl ToolRegistry {
         };
 
         registry.register(
-            ToolDefinition {
-                name: "read_file".to_string(),
-                description: "读取 UTF-8 文本文件内容。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "read_file",
+                "读取 UTF-8 文本文件内容。",
+                json!({
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "目标文件路径" }
@@ -86,17 +85,15 @@ impl ToolRegistry {
                     "required": ["path"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::ReadOnly,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::ReadOnly,
+            ),
             Arc::new(ReadFileTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "write_file".to_string(),
-                description: "写入文件，支持整文件覆盖或 replace_range 按行替换。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "write_file",
+                "写入文件，支持整文件覆盖或 replace_range 按行替换。",
+                json!({
                     "type": "object",
                     "properties": {
                         "path": { "type": "string", "description": "目标文件路径" },
@@ -115,17 +112,15 @@ impl ToolRegistry {
                     "required": ["path"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Write,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Write,
+            ),
             Arc::new(WriteFileTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "run_shell".to_string(),
-                description: "在 PowerShell 中执行命令。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "run_shell",
+                "在 PowerShell 中执行命令。",
+                json!({
                     "type": "object",
                     "properties": {
                         "command": { "type": "string", "description": "待执行命令" },
@@ -135,34 +130,30 @@ impl ToolRegistry {
                     "required": ["command"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Execute,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Execute,
+            ),
             Arc::new(RunShellTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "rlm_open".to_string(),
-                description: "启动一个可复用的持久交互进程。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "rlm_open",
+                "启动一个可复用的持久交互进程。",
+                json!({
                     "type": "object",
                     "properties": {
                         "working_directory": { "type": "string", "description": "可选工作目录" }
                     },
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Execute,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Execute,
+            ),
             Arc::new(RlmOpenTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "rlm_eval".to_string(),
-                description: "向持久交互进程发送命令并读取输出。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "rlm_eval",
+                "向持久交互进程发送命令并读取输出。",
+                json!({
                     "type": "object",
                     "properties": {
                         "process_id": { "type": "string", "description": "持久进程标识" },
@@ -171,17 +162,15 @@ impl ToolRegistry {
                     "required": ["process_id", "command"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Execute,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Execute,
+            ),
             Arc::new(RlmEvalTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "rlm_configure".to_string(),
-                description: "调整持久交互进程配置，例如切换工作目录。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "rlm_configure",
+                "调整持久交互进程配置，例如切换工作目录。",
+                json!({
                     "type": "object",
                     "properties": {
                         "process_id": { "type": "string", "description": "持久进程标识" },
@@ -190,17 +179,15 @@ impl ToolRegistry {
                     "required": ["process_id"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Execute,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Execute,
+            ),
             Arc::new(RlmConfigureTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "rlm_close".to_string(),
-                description: "关闭持久交互进程并释放资源。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "rlm_close",
+                "关闭持久交互进程并释放资源。",
+                json!({
                     "type": "object",
                     "properties": {
                         "process_id": { "type": "string", "description": "持久进程标识" }
@@ -208,17 +195,15 @@ impl ToolRegistry {
                     "required": ["process_id"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Execute,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Execute,
+            ),
             Arc::new(RlmCloseTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "load_skill".to_string(),
-                description: "按名称或路径加载目标 Skill.md 正文。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "load_skill",
+                "按名称或路径加载目标 SKILL.md 正文。",
+                json!({
                     "type": "object",
                     "properties": {
                         "identifier": { "type": "string", "description": "Skill 名称或路径" }
@@ -226,17 +211,15 @@ impl ToolRegistry {
                     "required": ["identifier"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::ReadOnly,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::ReadOnly,
+            ),
             Arc::new(LoadSkillTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "read_tool_result".to_string(),
-                description: "根据 tool:{id} 句柄读取已外置的工具结果。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "read_tool_result",
+                "根据 tool:{id} 句柄读取已外置的工具结果。",
+                json!({
                     "type": "object",
                     "properties": {
                         "handle": { "type": "string", "description": "工具结果句柄，例如 tool:call_xxx" }
@@ -244,17 +227,15 @@ impl ToolRegistry {
                     "required": ["handle"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::ReadOnly,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::ReadOnly,
+            ),
             Arc::new(ReadToolResultTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "fetch_url".to_string(),
-                description: "抓取指定 URL 的文本内容。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "fetch_url",
+                "抓取指定 URL 的文本内容。",
+                json!({
                     "type": "object",
                     "properties": {
                         "url": { "type": "string", "description": "目标 URL" }
@@ -262,17 +243,15 @@ impl ToolRegistry {
                     "required": ["url"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Network,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Network,
+            ),
             Arc::new(FetchUrlTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "web_search".to_string(),
-                description: "执行网络搜索并返回结构化结果列表。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "web_search",
+                "执行网络搜索并返回结构化结果列表。",
+                json!({
                     "type": "object",
                     "properties": {
                         "query": { "type": "string", "description": "搜索关键字" },
@@ -281,17 +260,15 @@ impl ToolRegistry {
                     "required": ["query"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Network,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Network,
+            ),
             Arc::new(WebSearchTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "web_run".to_string(),
-                description: "执行基础网页步骤，包括 open、click、find、extract_text。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "web_run",
+                "执行基础网页步骤，包括 open、click、find、extract_text。",
+                json!({
                     "type": "object",
                     "properties": {
                         "steps": {
@@ -313,17 +290,15 @@ impl ToolRegistry {
                     "required": ["steps"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Network,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Network,
+            ),
             Arc::new(WebRunTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "github_get".to_string(),
-                description: "调用 GitHub REST API 的只读 GET 接口。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "github_get",
+                "调用 GitHub REST API 的只读 GET 接口。",
+                json!({
                     "type": "object",
                     "properties": {
                         "endpoint": { "type": "string", "description": "GitHub API 相对路径，例如 /repos/owner/repo/issues" }
@@ -331,32 +306,28 @@ impl ToolRegistry {
                     "required": ["endpoint"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Network,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Network,
+            ),
             Arc::new(GithubGetTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "discover_mcp_servers".to_string(),
-                description: "发现并列出当前工作区可用的 MCP 服务端配置。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "discover_mcp_servers",
+                "发现并列出当前工作区可用的 MCP 服务端配置。",
+                json!({
                     "type": "object",
                     "properties": {},
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::ReadOnly,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::ReadOnly,
+            ),
             Arc::new(DiscoverMcpServersTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "connect_mcp_server".to_string(),
-                description: "连接指定 MCP 服务端并读取能力信息。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "connect_mcp_server",
+                "连接指定 MCP 服务端并读取能力信息。",
+                json!({
                     "type": "object",
                     "properties": {
                         "server_id": { "type": "string", "description": "MCP 服务端标识" }
@@ -364,17 +335,15 @@ impl ToolRegistry {
                     "required": ["server_id"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Network,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Network,
+            ),
             Arc::new(ConnectMcpServerTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "call_mcp_tool".to_string(),
-                description: "调用指定 MCP 服务端上的远程工具。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "call_mcp_tool",
+                "调用指定 MCP 服务端上的远程工具。",
+                json!({
                     "type": "object",
                     "properties": {
                         "server_id": { "type": "string", "description": "MCP 服务端标识" },
@@ -384,17 +353,15 @@ impl ToolRegistry {
                     "required": ["server_id", "tool_name", "arguments"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Network,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Network,
+            ),
             Arc::new(CallMcpTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "agent_open".to_string(),
-                description: "创建子 Agent，并记录隔离或继承模式约束。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "agent_open",
+                "创建子 Agent，并记录隔离或继承模式约束。",
+                json!({
                     "type": "object",
                     "properties": {
                         "mode": { "type": "string", "description": "inherit 或 isolate" },
@@ -406,17 +373,15 @@ impl ToolRegistry {
                     "required": ["mode", "task_spec"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Agent,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Agent,
+            ),
             Arc::new(AgentOpenTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "agent_eval".to_string(),
-                description: "向已创建的子 Agent 派发执行请求。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "agent_eval",
+                "向已创建的子 Agent 派发执行请求。",
+                json!({
                     "type": "object",
                     "properties": {
                         "agent_id": { "type": "string", "description": "子 Agent 标识" },
@@ -425,17 +390,15 @@ impl ToolRegistry {
                     "required": ["agent_id", "input"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Agent,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Agent,
+            ),
             Arc::new(AgentEvalTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "agent_close".to_string(),
-                description: "关闭指定子 Agent。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "agent_close",
+                "关闭指定子 Agent。",
+                json!({
                     "type": "object",
                     "properties": {
                         "agent_id": { "type": "string", "description": "子 Agent 标识" }
@@ -443,17 +406,15 @@ impl ToolRegistry {
                     "required": ["agent_id"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Agent,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Agent,
+            ),
             Arc::new(AgentCloseTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "plan_write".to_string(),
-                description: "写入或更新当前会话下的计划文档。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "plan_write",
+                "写入或更新当前会话下的计划文档。",
+                json!({
                     "type": "object",
                     "properties": {
                         "plan_type": { "type": "string", "description": "计划类型，例如 implementation 或 review" },
@@ -462,17 +423,15 @@ impl ToolRegistry {
                     "required": ["plan_type", "content"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Write,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Write,
+            ),
             Arc::new(PlanWriteTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "task_create".to_string(),
-                description: "创建会话内任务记录。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "task_create",
+                "创建会话内任务记录。",
+                json!({
                     "type": "object",
                     "properties": {
                         "name": { "type": "string", "description": "任务名称" },
@@ -482,17 +441,15 @@ impl ToolRegistry {
                     "required": ["name", "command"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Write,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Write,
+            ),
             Arc::new(TaskCreateTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "task_run".to_string(),
-                description: "执行已创建的会话任务。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "task_run",
+                "执行已创建的会话任务。",
+                json!({
                     "type": "object",
                     "properties": {
                         "task_id": { "type": "string", "description": "任务标识" },
@@ -501,17 +458,15 @@ impl ToolRegistry {
                     "required": ["task_id"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Execute,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Execute,
+            ),
             Arc::new(TaskRunTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "automation_create".to_string(),
-                description: "创建自动化记录。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "automation_create",
+                "创建自动化记录。",
+                json!({
                     "type": "object",
                     "properties": {
                         "name": { "type": "string", "description": "自动化名称" },
@@ -522,17 +477,15 @@ impl ToolRegistry {
                     "required": ["name", "kind", "status", "definition"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Write,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Write,
+            ),
             Arc::new(AutomationCreateTool),
         );
-
         registry.register(
-            ToolDefinition {
-                name: "automation_run_once".to_string(),
-                description: "立刻执行一次自动化。".to_string(),
-                parameters_schema: json!({
+            tool_definition(
+                "automation_run_once",
+                "立刻执行一次自动化。",
+                json!({
                     "type": "object",
                     "properties": {
                         "automation_id": { "type": "string", "description": "自动化标识" },
@@ -541,9 +494,8 @@ impl ToolRegistry {
                     "required": ["automation_id"],
                     "additionalProperties": false
                 }),
-                risk_level: ToolRiskLevel::Execute,
-                visible_to_model: true,
-            },
+                ToolRiskLevel::Execute,
+            ),
             Arc::new(AutomationRunOnceTool),
         );
 
@@ -570,9 +522,68 @@ impl ToolRegistry {
 
     /// 返回对模型可见的工具定义列表。
     pub fn model_tools(&self) -> Vec<Value> {
+        self.model_tools_for_context("", false, true, true)
+    }
+
+    /// 根据当前上下文和配置返回对模型可见的工具列表。
+    pub fn model_tools_for_context(
+        &self,
+        context_text: &str,
+        enable_adaptive_tool_exposure: bool,
+        allow_network: bool,
+        allow_plugin_tool: bool,
+    ) -> Vec<Value> {
+        let normalized = context_text.to_ascii_lowercase();
+        let github_enabled = allow_network && std::env::var("GITHUB_TOKEN").is_ok();
+
         self.tools
             .values()
             .filter(|tool| tool.definition.visible_to_model)
+            .filter(|tool| {
+                if !enable_adaptive_tool_exposure {
+                    return if tool.definition.name == "github_get" {
+                        github_enabled
+                    } else if is_network_tool(&tool.definition.name) {
+                        allow_network
+                    } else {
+                        true
+                    };
+                }
+
+                match tool.definition.name.as_str() {
+                    "fetch_url" | "web_search" | "web_run" => allow_network,
+                    "github_get" => {
+                        github_enabled
+                            && contains_any_keyword(&normalized, &["github", "pr", "issue"])
+                    }
+                    "automation_create" | "automation_run_once" => contains_any_keyword(
+                        &normalized,
+                        &[
+                            "automation",
+                            "cron",
+                            "heartbeat",
+                            "\u{81ea}\u{52a8}\u{5316}",
+                            "\u{5b9a}\u{65f6}",
+                        ],
+                    ),
+                    "agent_open" | "agent_eval" | "agent_close" => {
+                        allow_plugin_tool
+                            && contains_any_keyword(
+                                &normalized,
+                                &[
+                                    "agent",
+                                    "subagent",
+                                    "\u{5b50}\u{4ee3}\u{7406}",
+                                    "\u{5b50} agent",
+                                ],
+                            )
+                    }
+                    "rlm_open" | "rlm_eval" | "rlm_configure" | "rlm_close" => {
+                        contains_any_keyword(&normalized, &["rlm", "\u{63a8}\u{7406}\u{673a}"])
+                    }
+                    _ => true,
+                }
+            })
             .map(|tool| {
                 json!({
                     "type": "function",
@@ -584,5 +595,83 @@ impl ToolRegistry {
                 })
             })
             .collect()
+    }
+}
+
+fn tool_definition(
+    name: &str,
+    description: &str,
+    parameters_schema: Value,
+    risk_level: ToolRiskLevel,
+) -> ToolDefinition {
+    ToolDefinition {
+        name: name.to_string(),
+        description: description.to_string(),
+        parameters_schema,
+        risk_level,
+        visible_to_model: true,
+    }
+}
+
+fn contains_any_keyword(text: &str, keywords: &[&str]) -> bool {
+    keywords.iter().any(|keyword| text.contains(keyword))
+}
+
+fn is_network_tool(name: &str) -> bool {
+    matches!(name, "fetch_url" | "web_search" | "web_run" | "github_get")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ToolRegistry;
+
+    fn tool_names(tools: Vec<serde_json::Value>) -> Vec<String> {
+        tools
+            .into_iter()
+            .filter_map(|tool| {
+                tool.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(|value| value.to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn should_filter_network_tools_when_network_disabled() {
+        let registry = ToolRegistry::with_defaults();
+        let names = tool_names(registry.model_tools_for_context("search rust", true, false, true));
+        assert!(!names.iter().any(|name| name == "web_search"));
+        assert!(!names.iter().any(|name| name == "fetch_url"));
+        assert!(names.iter().any(|name| name == "read_file"));
+    }
+
+    #[test]
+    fn should_expose_contextual_tools_when_keywords_match() {
+        let registry = ToolRegistry::with_defaults();
+        let names = tool_names(registry.model_tools_for_context(
+            "需要一个 subagent 做 automation cron，并用 rlm 推理机",
+            true,
+            true,
+            true,
+        ));
+        assert!(names.iter().any(|name| name == "agent_open"));
+        assert!(names.iter().any(|name| name == "automation_create"));
+        assert!(names.iter().any(|name| name == "rlm_open"));
+    }
+
+    #[test]
+    fn should_only_expose_github_tool_with_token_and_keyword() {
+        let registry = ToolRegistry::with_defaults();
+        std::env::remove_var("GITHUB_TOKEN");
+        let without_token =
+            tool_names(registry.model_tools_for_context("github issue", true, true, true));
+        assert!(!without_token.iter().any(|name| name == "github_get"));
+
+        std::env::set_var("GITHUB_TOKEN", "demo");
+        let with_token =
+            tool_names(registry.model_tools_for_context("github issue", true, true, true));
+        assert!(with_token.iter().any(|name| name == "github_get"));
+        std::env::remove_var("GITHUB_TOKEN");
     }
 }

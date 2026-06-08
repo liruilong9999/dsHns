@@ -325,20 +325,17 @@ mod tests {
             "target/test_event_bus_agent_{}",
             uuid::Uuid::new_v4()
         )));
-        bus.emit_agent_status(
-            "session-1",
-            2,
-            "agent-1",
-            "open",
-            Some("child-1"),
-            None,
-        )
-        .expect("写入子 Agent 状态事件失败");
+        bus.emit_agent_status("session-1", 2, "agent-1", "open", Some("child-1"), None)
+            .expect("写入子 Agent 状态事件失败");
 
         let events = bus.list_events().expect("读取事件列表失败");
         assert!(events.iter().any(|event| {
             matches!(event.event_type, EventType::AgentStatusChanged)
-                && event.payload.get("agent_id").and_then(|value| value.as_str()) == Some("agent-1")
+                && event
+                    .payload
+                    .get("agent_id")
+                    .and_then(|value| value.as_str())
+                    == Some("agent-1")
         }));
     }
 }
