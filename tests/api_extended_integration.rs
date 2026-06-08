@@ -108,6 +108,30 @@ async fn should_query_tool_result_body_and_delete_restore_workspace() {
         .expect("请求 tool-calls 失败");
     assert_eq!(tool_calls.status(), StatusCode::OK);
 
+    let status_snapshot = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/sessions/{}/status", session_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("请求 session status 失败");
+    assert_eq!(status_snapshot.status(), StatusCode::OK);
+    let status_body = axum::body::to_bytes(status_snapshot.into_body(), usize::MAX)
+        .await
+        .expect("读取 session status 响应失败");
+    let status_json: serde_json::Value =
+        serde_json::from_slice(&status_body).expect("解析 session status 响应失败");
+    assert_eq!(
+        status_json
+            .get("session")
+            .and_then(|item| item.get("id"))
+            .and_then(serde_json::Value::as_str),
+        Some(session_id.as_str())
+    );
+
     let workspaces = router
         .clone()
         .oneshot(
