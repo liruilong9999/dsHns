@@ -9,7 +9,7 @@ use regex::Regex;
 use reqwest::Client;
 use reqwest::Url;
 use scraper::{Html, Selector};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -124,6 +124,25 @@ struct FimEditInput {
     path: String,
     old_text: String,
     new_text: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct RequestUserInputOption {
+    label: String,
+    description: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct RequestUserInputQuestion {
+    header: String,
+    id: String,
+    question: String,
+    options: Vec<RequestUserInputOption>,
+}
+
+#[derive(Deserialize)]
+struct RequestUserInputInput {
+    questions: Vec<RequestUserInputQuestion>,
 }
 
 #[derive(Deserialize)]
@@ -563,6 +582,7 @@ pub struct ExecShellTool;
 pub struct ExecShellWaitTool;
 pub struct ExecShellInteractTool;
 pub struct ExecShellCancelTool;
+pub struct RequestUserInputTool;
 
 #[async_trait]
 impl ToolHandler for EditFileTool {
@@ -1200,6 +1220,41 @@ impl ToolHandler for ExecShellCancelTool {
             "status": "cancelled"
         })
         .to_string())
+    }
+}
+
+#[async_trait]
+impl ToolHandler for RequestUserInputTool {
+    async fn handle(&self, input: Value, _context: &ToolExecutionContext) -> Result<String> {
+        let input: RequestUserInputInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("request_user_input 参数非法：{}", error))?;
+        if input.questions.is_empty() || input.questions.len() > 3 {
+            return Err(anyhow!("request_user_input 需要 1 到 3 个问题"));
+        }
+
+        for question in &input.questions {
+            if question.header.trim().is_empty()
+                || question.id.trim().is_empty()
+                || question.question.trim().is_empty()
+            {
+                return Err(anyhow!("request_user_input 存在空白问题字段"));
+            }
+            if question.options.len() < 2 || question.options.len() > 3 {
+                return Err(anyhow!(
+                    "request_user_input 的每个问题需要 2 到 3 个选项"
+                ));
+            }
+            if question.options.iter().any(|option| {
+                option.label.trim().is_empty() || option.description.trim().is_empty()
+            }) {
+                return Err(anyhow!("request_user_input 存在空白选项字段"));
+            }
+        }
+
+        Ok(serde_json::to_string_pretty(&json!({
+            "kind": "request_user_input",
+            "questions": input.questions
+        }))?)
     }
 }
 

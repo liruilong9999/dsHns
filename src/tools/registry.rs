@@ -16,7 +16,7 @@ use crate::tools::builtin::{
     FileSearchTool, FimEditTool, FinanceTool, GitBlameTool, GitDiffTool, GitLogTool, GitShowTool,
     GitStatusTool, GithubGetTool, GrepFilesTool, HandleReadTool, ListDirTool, LoadSkillTool,
     NoteTool, NotifyTool, PlanWriteTool, ProjectMapTool, ReadFileTool, ReadToolResultTool,
-    RecallArchiveTool, RememberTool, RetrieveToolResultTool, ReviewTool, RlmCloseTool,
+    RecallArchiveTool, RememberTool, RequestUserInputTool, RetrieveToolResultTool, ReviewTool, RlmCloseTool,
     RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, RunTestsTool, TaskCreateTool,
     TaskRunTool, ValidateDataTool, WebRunTool, WebSearchTool, WriteFileTool,
 };
@@ -341,6 +341,46 @@ impl ToolRegistry {
                 ToolRiskLevel::ReadOnly,
             ),
             Arc::new(ReviewTool),
+        );
+        registry.register(
+            tool_definition(
+                "request_user_input",
+                "生成待上层继续提问的结构化请求。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "questions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "header": { "type": "string" },
+                                    "id": { "type": "string" },
+                                    "question": { "type": "string" },
+                                    "options": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "label": { "type": "string" },
+                                                "description": { "type": "string" }
+                                            },
+                                            "required": ["label", "description"],
+                                            "additionalProperties": false
+                                        }
+                                    }
+                                },
+                                "required": ["header", "id", "question", "options"],
+                                "additionalProperties": false
+                            }
+                        }
+                    },
+                    "required": ["questions"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(RequestUserInputTool),
         );
         registry.register(
             tool_definition(
