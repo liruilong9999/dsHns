@@ -378,6 +378,25 @@ struct AutomationRunOnceInput {
     timeout_ms: Option<u64>,
 }
 
+#[derive(Deserialize)]
+struct AutomationReadInput {
+    automation_id: String,
+}
+
+#[derive(Deserialize)]
+struct AutomationUpdateInput {
+    automation_id: String,
+    name: Option<String>,
+    kind: Option<String>,
+    status: Option<String>,
+    definition: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct AutomationStateInput {
+    automation_id: String,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct TaskRecord {
     id: String,
@@ -532,6 +551,12 @@ pub struct TaskReadTool;
 pub struct TaskCancelTool;
 /// 自动化创建工具。
 pub struct AutomationCreateTool;
+pub struct AutomationListTool;
+pub struct AutomationReadTool;
+pub struct AutomationUpdateTool;
+pub struct AutomationPauseTool;
+pub struct AutomationResumeTool;
+pub struct AutomationDeleteTool;
 /// 自动化单次执行工具。
 pub struct AutomationRunOnceTool;
 
@@ -2166,11 +2191,7 @@ impl ToolHandler for AutomationCreateTool {
     async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
         let input: AutomationCreateInput = serde_json::from_value(input)
             .map_err(|error| anyhow!("automation_create 参数非法：{}", error))?;
-        let path = context
-            .session_dir
-            .join(".tools")
-            .join("automation")
-            .join("automations.json");
+        let path = automation_file_path(&context.session_dir);
         let mut records = load_json_array::<AutomationRecord>(&path)?;
         let record = AutomationRecord {
             id: Uuid::new_v4().to_string(),
@@ -2187,15 +2208,99 @@ impl ToolHandler for AutomationCreateTool {
 }
 
 #[async_trait]
+impl ToolHandler for AutomationListTool {
+    async fn handle(&self, _input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let path = automation_file_path(&context.session_dir);
+        let records = load_json_array::<AutomationRecord>(&path)?;
+        Ok(serde_json::to_string_pretty(&records)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for AutomationReadTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: AutomationReadInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("automation_read 参数非法：{}", error))?;
+        let path = automation_file_path(&context.session_dir);
+        let records = load_json_array::<AutomationRecord>(&path)?;
+        let record = records
+            .into_iter()
+            .find(|record| record.id == input.automation_id)
+            .ok_or_else(|| anyhow!("未找到自动化：{}", input.automation_id))?;
+        Ok(serde_json::to_string_pretty(&record)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for AutomationUpdateTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: AutomationUpdateInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("automation_update 参数非法：{}", error))?;
+        let path = automation_file_path(&context.session_dir);
+        let mut records = load_json_array::<AutomationRecord>(&path)?;
+        let index = records
+            .iter()
+            .position(|record| record.id == input.automation_id)
+            .ok_or_else(|| anyhow!("未找到自动化：{}", input.automation_id))?;
+
+        if let Some(name) = input.name {
+            records[index].name = name;
+        }
+        if let Some(kind) = input.kind {
+            records[index].kind = kind;
+        }
+        if let Some(status) = input.status {
+            records[index].status = status;
+        }
+        if let Some(definition) = input.definition {
+            records[index].definition_json = serde_json::to_string(&definition)?;
+        }
+        write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+        Ok(serde_json::to_string_pretty(&records[index])?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for AutomationPauseTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: AutomationStateInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("automation_pause 参数非法：{}", error))?;
+        update_automation_status(&context.session_dir, &input.automation_id, "paused")
+    }
+}
+
+#[async_trait]
+impl ToolHandler for AutomationResumeTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: AutomationStateInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("automation_resume 参数非法：{}", error))?;
+        update_automation_status(&context.session_dir, &input.automation_id, "active")
+    }
+}
+
+#[async_trait]
+impl ToolHandler for AutomationDeleteTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: AutomationStateInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("automation_delete 参数非法：{}", error))?;
+        let path = automation_file_path(&context.session_dir);
+        let mut records = load_json_array::<AutomationRecord>(&path)?;
+        let before = records.len();
+        records.retain(|record| record.id != input.automation_id);
+        if records.len() == before {
+            return Err(anyhow!("未找到自动化：{}", input.automation_id));
+        }
+        write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+        Ok("已删除自动化。".to_string())
+    }
+}
+
+#[async_trait]
 impl ToolHandler for AutomationRunOnceTool {
     async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
         let input: AutomationRunOnceInput = serde_json::from_value(input)
             .map_err(|error| anyhow!("automation_run_once 参数非法：{}", error))?;
-        let path = context
-            .session_dir
-            .join(".tools")
-            .join("automation")
-            .join("automations.json");
+        let path = automation_file_path(&context.session_dir);
         let mut records = load_json_array::<AutomationRecord>(&path)?;
         let index = records
             .iter()
@@ -2365,6 +2470,29 @@ fn sanitize_name(name: &str) -> String {
             }
         })
         .collect()
+}
+
+fn automation_file_path(session_dir: &Path) -> PathBuf {
+    session_dir
+        .join(".tools")
+        .join("automation")
+        .join("automations.json")
+}
+
+fn update_automation_status(
+    session_dir: &Path,
+    automation_id: &str,
+    status: &str,
+) -> Result<String> {
+    let path = automation_file_path(session_dir);
+    let mut records = load_json_array::<AutomationRecord>(&path)?;
+    let index = records
+        .iter()
+        .position(|record| record.id == automation_id)
+        .ok_or_else(|| anyhow!("未找到自动化：{}", automation_id))?;
+    records[index].status = status.to_string();
+    write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+    Ok(serde_json::to_string_pretty(&records[index])?)
 }
 
 fn rlm_registry() -> &'static Arc<Mutex<std::collections::HashMap<String, ManagedRlmProcess>>> {

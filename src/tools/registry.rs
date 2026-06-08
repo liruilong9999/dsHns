@@ -10,16 +10,18 @@ use serde_json::{json, Value};
 use crate::domain::ToolRiskLevel;
 use crate::skill::manager::SkillManager;
 use crate::tools::builtin::{
-    AgentCloseTool, AgentEvalTool, AgentOpenTool, AutomationCreateTool, AutomationRunOnceTool,
-    CallMcpTool, ConnectMcpServerTool, DiagnosticsTool, DiscoverMcpServersTool, EditFileTool,
-    ExecShellCancelTool, ExecShellInteractTool, ExecShellTool, ExecShellWaitTool, FetchUrlTool,
-    FileSearchTool, FimEditTool, FinanceTool, GitBlameTool, GitDiffTool, GitLogTool, GitShowTool,
-    GitStatusTool, GithubGetTool, GrepFilesTool, HandleReadTool, ListDirTool, LoadSkillTool,
-    NoteTool, NotifyTool, PlanWriteTool, ProjectMapTool, ReadFileTool, ReadToolResultTool,
-    RecallArchiveTool, RememberTool, RequestUserInputTool, RetrieveToolResultTool, ReviewTool,
-    RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, RunTestsTool,
-    TaskCancelTool, TaskCreateTool, TaskListTool, TaskReadTool, TaskRunTool, TaskShellStartTool,
-    TaskShellWaitTool, ValidateDataTool, WebRunTool, WebSearchTool, WriteFileTool,
+    AgentCloseTool, AgentEvalTool, AgentOpenTool, AutomationCreateTool, AutomationDeleteTool,
+    AutomationListTool, AutomationPauseTool, AutomationReadTool, AutomationResumeTool,
+    AutomationRunOnceTool, AutomationUpdateTool, CallMcpTool, ConnectMcpServerTool,
+    DiagnosticsTool, DiscoverMcpServersTool, EditFileTool, ExecShellCancelTool,
+    ExecShellInteractTool, ExecShellTool, ExecShellWaitTool, FetchUrlTool, FileSearchTool,
+    FimEditTool, FinanceTool, GitBlameTool, GitDiffTool, GitLogTool, GitShowTool, GitStatusTool,
+    GithubGetTool, GrepFilesTool, HandleReadTool, ListDirTool, LoadSkillTool, NoteTool, NotifyTool,
+    PlanWriteTool, ProjectMapTool, ReadFileTool, ReadToolResultTool, RecallArchiveTool,
+    RememberTool, RequestUserInputTool, RetrieveToolResultTool, ReviewTool, RlmCloseTool,
+    RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, RunTestsTool, TaskCancelTool,
+    TaskCreateTool, TaskListTool, TaskReadTool, TaskRunTool, TaskShellStartTool, TaskShellWaitTool,
+    ValidateDataTool, WebRunTool, WebSearchTool, WriteFileTool,
 };
 
 /// 工具定义。
@@ -1086,6 +1088,103 @@ impl ToolRegistry {
                 ToolRiskLevel::Write,
             ),
             Arc::new(AutomationCreateTool),
+        );
+        registry.register(
+            tool_definition(
+                "automation_list",
+                "列出自动化记录。",
+                json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(AutomationListTool),
+        );
+        registry.register(
+            tool_definition(
+                "automation_read",
+                "读取单条自动化记录。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "automation_id": { "type": "string", "description": "自动化标识" }
+                    },
+                    "required": ["automation_id"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(AutomationReadTool),
+        );
+        registry.register(
+            tool_definition(
+                "automation_update",
+                "更新自动化记录。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "automation_id": { "type": "string", "description": "自动化标识" },
+                        "name": { "type": "string", "description": "可选名称" },
+                        "kind": { "type": "string", "description": "可选类型" },
+                        "status": { "type": "string", "description": "可选状态" },
+                        "definition": { "type": "object", "description": "可选定义" }
+                    },
+                    "required": ["automation_id"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Write,
+            ),
+            Arc::new(AutomationUpdateTool),
+        );
+        registry.register(
+            tool_definition(
+                "automation_pause",
+                "暂停自动化。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "automation_id": { "type": "string", "description": "自动化标识" }
+                    },
+                    "required": ["automation_id"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Write,
+            ),
+            Arc::new(AutomationPauseTool),
+        );
+        registry.register(
+            tool_definition(
+                "automation_resume",
+                "恢复自动化。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "automation_id": { "type": "string", "description": "自动化标识" }
+                    },
+                    "required": ["automation_id"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Write,
+            ),
+            Arc::new(AutomationResumeTool),
+        );
+        registry.register(
+            tool_definition(
+                "automation_delete",
+                "删除自动化。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "automation_id": { "type": "string", "description": "自动化标识" }
+                    },
+                    "required": ["automation_id"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Write,
+            ),
+            Arc::new(AutomationDeleteTool),
         );
         registry.register(
             tool_definition(
