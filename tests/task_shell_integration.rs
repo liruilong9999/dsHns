@@ -2,7 +2,10 @@
 use std::path::PathBuf;
 
 use dshns::skill::manager::SkillManager;
-use dshns::tools::builtin::{TaskCreateTool, TaskShellStartTool, TaskShellWaitTool};
+use dshns::tools::builtin::{
+    TaskCancelTool, TaskCreateTool, TaskListTool, TaskReadTool, TaskShellStartTool,
+    TaskShellWaitTool,
+};
 use dshns::tools::registry::{ToolExecutionContext, ToolHandler};
 use dshns::utils::fs::ensure_directory;
 use serde_json::json;
@@ -63,4 +66,48 @@ async fn should_bind_task_to_background_shell_and_wait() {
         .await
         .expect("task_shell_wait 执行失败");
     assert!(output.contains("task-shell-output"));
+
+    let list_tool = TaskListTool;
+    let listed = list_tool
+        .handle(json!({}), &context)
+        .await
+        .expect("task_list 执行失败");
+    assert!(listed.contains("bg-task"));
+
+    let read_tool = TaskReadTool;
+    let read_result = read_tool
+        .handle(json!({ "task_id": task_id }), &context)
+        .await
+        .expect("task_read 执行失败");
+    assert!(read_result.contains("\"status\": \"done\""));
+
+    let created_cancel = create_tool
+        .handle(
+            json!({
+                "name": "cancel-task",
+                "command": "Write-Output 'cancel-me'"
+            }),
+            &context,
+        )
+        .await
+        .expect("创建取消任务失败");
+    let cancel_json: serde_json::Value =
+        serde_json::from_str(&created_cancel).expect("解析取消任务结果失败");
+    let cancel_task_id = cancel_json
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("缺少 cancel task id")
+        .to_string();
+
+    start_tool
+        .handle(json!({ "task_id": cancel_task_id }), &context)
+        .await
+        .expect("启动取消任务失败");
+
+    let cancel_tool = TaskCancelTool;
+    let cancel_result = cancel_tool
+        .handle(json!({ "task_id": cancel_task_id }), &context)
+        .await
+        .expect("task_cancel 执行失败");
+    assert!(cancel_result.contains("\"status\": \"cancelled\""));
 }

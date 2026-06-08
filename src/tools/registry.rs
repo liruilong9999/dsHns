@@ -18,8 +18,8 @@ use crate::tools::builtin::{
     NoteTool, NotifyTool, PlanWriteTool, ProjectMapTool, ReadFileTool, ReadToolResultTool,
     RecallArchiveTool, RememberTool, RequestUserInputTool, RetrieveToolResultTool, ReviewTool,
     RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, RunTestsTool,
-    TaskCreateTool, TaskRunTool, TaskShellStartTool, TaskShellWaitTool, ValidateDataTool,
-    WebRunTool, WebSearchTool, WriteFileTool,
+    TaskCancelTool, TaskCreateTool, TaskListTool, TaskReadTool, TaskRunTool, TaskShellStartTool,
+    TaskShellWaitTool, ValidateDataTool, WebRunTool, WebSearchTool, WriteFileTool,
 };
 
 /// 工具定义。
@@ -973,6 +973,35 @@ impl ToolRegistry {
         );
         registry.register(
             tool_definition(
+                "task_list",
+                "列出会话内任务记录。",
+                json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(TaskListTool),
+        );
+        registry.register(
+            tool_definition(
+                "task_read",
+                "读取单条任务记录。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "task_id": { "type": "string", "description": "任务标识" }
+                    },
+                    "required": ["task_id"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::ReadOnly,
+            ),
+            Arc::new(TaskReadTool),
+        );
+        registry.register(
+            tool_definition(
                 "task_run",
                 "执行已创建的会话任务。",
                 json!({
@@ -987,6 +1016,22 @@ impl ToolRegistry {
                 ToolRiskLevel::Execute,
             ),
             Arc::new(TaskRunTool),
+        );
+        registry.register(
+            tool_definition(
+                "task_cancel",
+                "取消任务并终止绑定的后台进程。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "task_id": { "type": "string", "description": "任务标识" }
+                    },
+                    "required": ["task_id"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Execute,
+            ),
+            Arc::new(TaskCancelTool),
         );
         registry.register(
             tool_definition(

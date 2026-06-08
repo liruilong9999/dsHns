@@ -342,6 +342,16 @@ struct TaskRunInput {
 }
 
 #[derive(Deserialize)]
+struct TaskReadInput {
+    task_id: String,
+}
+
+#[derive(Deserialize)]
+struct TaskCancelInput {
+    task_id: String,
+}
+
+#[derive(Deserialize)]
 struct TaskShellStartInput {
     task_id: String,
     working_directory: Option<String>,
@@ -517,6 +527,9 @@ pub struct PlanWriteTool;
 pub struct TaskCreateTool;
 /// 任务执行工具。
 pub struct TaskRunTool;
+pub struct TaskListTool;
+pub struct TaskReadTool;
+pub struct TaskCancelTool;
 /// 自动化创建工具。
 pub struct AutomationCreateTool;
 /// 自动化单次执行工具。
@@ -1942,6 +1955,68 @@ impl ToolHandler for TaskCreateTool {
         records.push(record.clone());
         write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
         Ok(serde_json::to_string_pretty(&record)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for TaskListTool {
+    async fn handle(&self, _input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let path = context
+            .session_dir
+            .join(".tools")
+            .join("task")
+            .join("tasks.json");
+        let records = load_json_array::<TaskRecord>(&path)?;
+        Ok(serde_json::to_string_pretty(&records)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for TaskReadTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: TaskReadInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("task_read 参数非法：{}", error))?;
+        let path = context
+            .session_dir
+            .join(".tools")
+            .join("task")
+            .join("tasks.json");
+        let records = load_json_array::<TaskRecord>(&path)?;
+        let record = records
+            .into_iter()
+            .find(|record| record.id == input.task_id)
+            .ok_or_else(|| anyhow!("未找到任务：{}", input.task_id))?;
+        Ok(serde_json::to_string_pretty(&record)?)
+    }
+}
+
+#[async_trait]
+impl ToolHandler for TaskCancelTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: TaskCancelInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("task_cancel 参数非法：{}", error))?;
+        let path = context
+            .session_dir
+            .join(".tools")
+            .join("task")
+            .join("tasks.json");
+        let mut records = load_json_array::<TaskRecord>(&path)?;
+        let index = records
+            .iter()
+            .position(|record| record.id == input.task_id)
+            .ok_or_else(|| anyhow!("未找到任务：{}", input.task_id))?;
+
+        if let Some(process_id) = records[index].bound_process_id.clone() {
+            let cancel_tool = ExecShellCancelTool;
+            let _ = cancel_tool
+                .handle(json!({ "process_id": process_id }), context)
+                .await;
+        }
+
+        records[index].status = "cancelled".to_string();
+        records[index].bound_process_id = None;
+        write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+        Ok(serde_json::to_string_pretty(&records[index])?)
     }
 }
 
