@@ -620,10 +620,7 @@ impl SqliteStore {
                 tool_name: row.get(1)?,
                 handle: row.get(2)?,
                 body_file_path: row.get(3)?,
-                projection_type: match row.get::<_, String>(4)?.as_str() {
-                    "Summary" => crate::domain::ToolProjectionType::Summary,
-                    _ => crate::domain::ToolProjectionType::InlineFull,
-                },
+                projection_type: parse_projection_type(&row.get::<_, String>(4)?),
                 projection_content: row.get(5)?,
                 summary: row.get(6)?,
                 preview_head: row.get(7)?,
@@ -662,10 +659,7 @@ impl SqliteStore {
                     tool_name: row.get(1)?,
                     handle: row.get(2)?,
                     body_file_path: row.get(3)?,
-                    projection_type: match row.get::<_, String>(4)?.as_str() {
-                        "Summary" => crate::domain::ToolProjectionType::Summary,
-                        _ => crate::domain::ToolProjectionType::InlineFull,
-                    },
+                    projection_type: parse_projection_type(&row.get::<_, String>(4)?),
                     projection_content: row.get(5)?,
                     summary: row.get(6)?,
                     preview_head: row.get(7)?,
@@ -943,5 +937,14 @@ impl SqliteStore {
             created_at: row.get(7)?,
             restored_at: row.get(8)?,
         })
+    }
+}
+
+fn parse_projection_type(value: &str) -> crate::domain::ToolProjectionType {
+    match value {
+        "Summary" => crate::domain::ToolProjectionType::SummaryWithPreview,
+        "SummaryWithPreview" => crate::domain::ToolProjectionType::SummaryWithPreview,
+        "SummaryOnly" => crate::domain::ToolProjectionType::SummaryOnly,
+        _ => crate::domain::ToolProjectionType::InlineFull,
     }
 }

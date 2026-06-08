@@ -1,5 +1,4 @@
 //! 工具相关实体定义。
-
 use serde::{Deserialize, Serialize};
 
 /// 工具风险等级。
@@ -32,9 +31,14 @@ pub enum ToolFailureType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolProjectionType {
     /// 直接内联全文。
+    #[serde(rename = "InlineFull")]
     InlineFull,
+    /// 返回摘要与预览。
+    #[serde(rename = "SummaryWithPreview", alias = "Summary")]
+    SummaryWithPreview,
     /// 仅返回摘要。
-    Summary,
+    #[serde(rename = "SummaryOnly")]
+    SummaryOnly,
 }
 
 /// `write_file` 的按行替换参数。
@@ -111,4 +115,16 @@ pub struct ToolResultRecord {
     pub externalized: bool,
     /// 更新时间。
     pub updated_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ToolProjectionType;
+
+    #[test]
+    fn should_deserialize_legacy_summary_projection() {
+        let projection: ToolProjectionType =
+            serde_json::from_str("\"Summary\"").expect("解析旧版 Summary 投影失败");
+        assert!(matches!(projection, ToolProjectionType::SummaryWithPreview));
+    }
 }

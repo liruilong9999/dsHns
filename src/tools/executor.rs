@@ -285,17 +285,36 @@ impl ToolExecutor {
             chars[start..].iter().collect::<String>()
         };
 
+        let projection_type = if externalized {
+            if char_count > self.inline_output_limit * 4 {
+                ToolProjectionType::SummaryOnly
+            } else {
+                ToolProjectionType::SummaryWithPreview
+            }
+        } else {
+            ToolProjectionType::InlineFull
+        };
+        let projection_content = match projection_type {
+            ToolProjectionType::InlineFull => receipt.projection_content.clone(),
+            ToolProjectionType::SummaryWithPreview => format!(
+                "{}\n\npreview_head:\n{}\n\npreview_tail:\n{}",
+                receipt.projection_content, preview_head, preview_tail
+            ),
+            ToolProjectionType::SummaryOnly => receipt
+                .projection_content
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+        };
+
         let record = ToolResultRecord {
             tool_call_id: receipt.tool_call_id.clone(),
             tool_name: receipt.tool_name.clone(),
             handle,
             body_file_path,
-            projection_type: if externalized {
-                ToolProjectionType::Summary
-            } else {
-                ToolProjectionType::InlineFull
-            },
-            projection_content: receipt.projection_content.clone(),
+            projection_type,
+            projection_content,
             summary: if receipt.success {
                 format!("工具 {} 执行成功", receipt.tool_name)
             } else {
