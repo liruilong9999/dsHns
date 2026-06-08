@@ -26,10 +26,22 @@ pub fn write_session_ini(session: &Session) -> Result<()> {
     ensure_directory(&session.session_dir)?;
     let mut ini = Ini::new();
     ini.set("session", "id", Some(session.id.clone()));
-    ini.set("session", "directory_id", Some(session.directory_id.clone()));
+    ini.set(
+        "session",
+        "directory_id",
+        Some(session.directory_id.clone()),
+    );
     ini.set("session", "name", Some(session.name.clone()));
-    ini.set("session", "project_name", Some(session.project_name.clone()));
-    ini.set("session", "project_path", Some(session.project_path.clone()));
+    ini.set(
+        "session",
+        "project_name",
+        Some(session.project_name.clone()),
+    );
+    ini.set(
+        "session",
+        "project_path",
+        Some(session.project_path.clone()),
+    );
     ini.set(
         "session",
         "working_directory",
@@ -46,14 +58,22 @@ pub fn write_session_ini(session: &Session) -> Result<()> {
         "status",
         Some(session.status.as_str().to_string()),
     );
-    ini.set("session", "system_prompt", Some(session.system_prompt.clone()));
+    ini.set(
+        "session",
+        "system_prompt",
+        Some(session.system_prompt.clone()),
+    );
     ini.set(
         "session",
         "stream_output",
         Some(session.stream_output.to_string()),
     );
     ini.set("state", "round", Some(session.round.to_string()));
-    ini.set("state", "is_finished", Some(session.is_finished.to_string()));
+    ini.set(
+        "state",
+        "is_finished",
+        Some(session.is_finished.to_string()),
+    );
     ini.set(
         "snapshot",
         "version",
@@ -205,7 +225,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        read_session_ini, read_memory_json, write_memory_json, write_session_ini,
+        read_memory_json, read_session_ini, write_memory_json, write_session_ini,
         MEMORY_JSON_BACKUP_NAME,
     };
     use crate::domain::{ApprovalMode, Message, Session};
