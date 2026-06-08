@@ -237,6 +237,11 @@ struct HandleReadInput {
 }
 
 #[derive(Deserialize)]
+struct FinanceInput {
+    symbol: String,
+}
+
+#[derive(Deserialize)]
 struct FetchUrlInput {
     url: String,
 }
@@ -357,6 +362,15 @@ struct SearchResultItem {
     title: String,
     link: String,
     snippet: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FinanceQuoteItem {
+    symbol: String,
+    currency: String,
+    regular_market_price: f64,
+    previous_close: Option<f64>,
+    timestamp: Option<i64>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -1399,6 +1413,7 @@ impl ToolHandler for LoadSkillTool {
 
 pub struct RetrieveToolResultTool;
 pub struct HandleReadTool;
+pub struct FinanceTool;
 
 #[async_trait]
 impl ToolHandler for ReadToolResultTool {
@@ -1497,6 +1512,67 @@ impl ToolHandler for HandleReadTool {
         };
 
         Ok(truncate_chars(&output, input.max_chars))
+    }
+}
+
+#[async_trait]
+impl ToolHandler for FinanceTool {
+    async fn handle(&self, input: Value, _context: &ToolExecutionContext) -> Result<String> {
+        let input: FinanceInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("finance 参数非法：{}", error))?;
+        if input.symbol.trim().is_empty() {
+            return Err(anyhow!("finance 的 symbol 不能为空"));
+        }
+
+        let base_url = std::env::var("YAHOO_FINANCE_BASE_URL")
+            .unwrap_or_else(|_| "https://query1.finance.yahoo.com/v8/finance/chart".to_string());
+        let url = format!("{}/{}", base_url.trim_end_matches('/'), input.symbol.trim());
+        let client = Client::new();
+        let payload: Value = client
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("调用 Yahoo Finance 失败：{}", url))?
+            .error_for_status()
+            .with_context(|| format!("Yahoo Finance 返回失败状态：{}", url))?
+            .json()
+            .await
+            .with_context(|| format!("解析 Yahoo Finance 响应失败：{}", url))?;
+
+        let result = payload
+            .get("chart")
+            .and_then(|value| value.get("result"))
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .ok_or_else(|| anyhow!("Yahoo Finance 响应缺少 result 字段"))?;
+        let meta = result
+            .get("meta")
+            .and_then(Value::as_object)
+            .ok_or_else(|| anyhow!("Yahoo Finance 响应缺少 meta 字段"))?;
+
+        let item = FinanceQuoteItem {
+            symbol: meta
+                .get("symbol")
+                .and_then(Value::as_str)
+                .unwrap_or(input.symbol.trim())
+                .to_string(),
+            currency: meta
+                .get("currency")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            regular_market_price: meta
+                .get("regularMarketPrice")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| anyhow!("Yahoo Finance 响应缺少 regularMarketPrice"))?,
+            previous_close: meta.get("previousClose").and_then(Value::as_f64),
+            timestamp: result
+                .get("timestamp")
+                .and_then(Value::as_array)
+                .and_then(|items| items.last())
+                .and_then(Value::as_i64),
+        };
+        Ok(serde_json::to_string_pretty(&item)?)
     }
 }
 

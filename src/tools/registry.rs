@@ -13,12 +13,12 @@ use crate::tools::builtin::{
     AgentCloseTool, AgentEvalTool, AgentOpenTool, AutomationCreateTool, AutomationRunOnceTool,
     CallMcpTool, ConnectMcpServerTool, DiagnosticsTool, DiscoverMcpServersTool, EditFileTool,
     ExecShellCancelTool, ExecShellInteractTool, ExecShellTool, ExecShellWaitTool, FetchUrlTool,
-    FileSearchTool, FimEditTool, GitBlameTool, GitDiffTool, GitLogTool, GitShowTool, GitStatusTool,
-    GithubGetTool, GrepFilesTool, HandleReadTool, ListDirTool, LoadSkillTool, NoteTool, NotifyTool,
-    PlanWriteTool, ProjectMapTool, ReadFileTool, ReadToolResultTool, RecallArchiveTool,
-    RememberTool, RetrieveToolResultTool, ReviewTool, RlmCloseTool, RlmConfigureTool, RlmEvalTool,
-    RlmOpenTool, RunShellTool, RunTestsTool, TaskCreateTool, TaskRunTool, ValidateDataTool,
-    WebRunTool, WebSearchTool, WriteFileTool,
+    FileSearchTool, FimEditTool, FinanceTool, GitBlameTool, GitDiffTool, GitLogTool, GitShowTool,
+    GitStatusTool, GithubGetTool, GrepFilesTool, HandleReadTool, ListDirTool, LoadSkillTool,
+    NoteTool, NotifyTool, PlanWriteTool, ProjectMapTool, ReadFileTool, ReadToolResultTool,
+    RecallArchiveTool, RememberTool, RetrieveToolResultTool, ReviewTool, RlmCloseTool,
+    RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, RunTestsTool, TaskCreateTool,
+    TaskRunTool, ValidateDataTool, WebRunTool, WebSearchTool, WriteFileTool,
 };
 
 /// 工具定义。
@@ -702,6 +702,22 @@ impl ToolRegistry {
         );
         registry.register(
             tool_definition(
+                "finance",
+                "通过 Yahoo Finance 查询行情。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "symbol": { "type": "string", "description": "行情代码，例如 AAPL" }
+                    },
+                    "required": ["symbol"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Network,
+            ),
+            Arc::new(FinanceTool),
+        );
+        registry.register(
+            tool_definition(
                 "fetch_url",
                 "抓取指定 URL 的文本内容。",
                 json!({
@@ -1020,7 +1036,7 @@ impl ToolRegistry {
                 }
 
                 match tool.definition.name.as_str() {
-                    "fetch_url" | "web_search" | "web_run" => allow_network,
+                    "fetch_url" | "web_search" | "web_run" | "finance" => allow_network,
                     "github_get" => {
                         github_enabled
                             && contains_any_keyword(&normalized, &["github", "pr", "issue"])
@@ -1087,7 +1103,10 @@ fn contains_any_keyword(text: &str, keywords: &[&str]) -> bool {
 }
 
 fn is_network_tool(name: &str) -> bool {
-    matches!(name, "fetch_url" | "web_search" | "web_run" | "github_get")
+    matches!(
+        name,
+        "fetch_url" | "web_search" | "web_run" | "github_get" | "finance"
+    )
 }
 
 #[cfg(test)]
