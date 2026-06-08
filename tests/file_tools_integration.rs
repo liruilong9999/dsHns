@@ -23,8 +23,11 @@ async fn should_list_search_grep_and_edit_files() {
     let readme_path = workspace_root.join("README.md");
     let rust_path = nested_dir.join("demo.rs");
     write_utf8(&readme_path, "hello rust workspace\nkeyword-line\n").expect("写入 README 失败");
-    write_utf8(&rust_path, "fn main() {\n    println!(\"hello rust\");\n}\n")
-        .expect("写入 Rust 文件失败");
+    write_utf8(
+        &rust_path,
+        "fn main() {\n    println!(\"hello rust\");\n}\n",
+    )
+    .expect("写入 Rust 文件失败");
 
     let context = ToolExecutionContext {
         workspace_root: workspace_root.clone(),
