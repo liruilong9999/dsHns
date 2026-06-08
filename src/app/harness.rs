@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 
 use crate::agent::loop_runner::{AgentLoopRunner, TurnOutcome};
-use crate::approval::manager::ApprovalManager;
+use crate::approval::manager::{ApprovalCapabilities, ApprovalManager};
 use crate::config::settings::Settings;
 use crate::domain::{
     AgentInstance, ApprovalMode, DeletionAudit, Session, SessionStatus, SessionStatusSnapshot,
@@ -257,7 +257,15 @@ impl Harness {
         event_bus.emit_session_status(&session.id, session.round + 1, session.status.as_str())?;
 
         let mut messages = self.session_manager.load_messages(&session)?;
-        let approval_manager = ApprovalManager::new(session.approval_mode);
+        let approval_manager = ApprovalManager::new(
+            session.approval_mode,
+            ApprovalCapabilities::new(
+                self.settings.allow_network,
+                self.settings.allow_shell,
+                self.settings.allow_file_write,
+                self.settings.allow_plugin_tool,
+            ),
+        );
         let tool_executor = Arc::new(ToolExecutor::new(
             self.tool_registry.clone(),
             approval_manager,

@@ -1,5 +1,4 @@
 //! 审批管理器实现。
-
 use std::io::{self, Write};
 
 use anyhow::Result;
@@ -18,16 +17,48 @@ pub struct ApprovalDecision {
     pub reason: String,
 }
 
+/// 审批能力开关。
+#[derive(Debug, Clone, Copy)]
+pub struct ApprovalCapabilities {
+    /// 是否允许网络工具。
+    pub allow_network: bool,
+    /// 是否允许 Shell 工具。
+    pub allow_shell: bool,
+    /// 是否允许写文件工具。
+    pub allow_file_write: bool,
+    /// 是否允许插件类工具。
+    pub allow_plugin_tool: bool,
+}
+
+impl ApprovalCapabilities {
+    /// 返回默认能力配置。
+    pub fn new(
+        allow_network: bool,
+        allow_shell: bool,
+        allow_file_write: bool,
+        allow_plugin_tool: bool,
+    ) -> Self {
+        Self {
+            allow_network,
+            allow_shell,
+            allow_file_write,
+            allow_plugin_tool,
+        }
+    }
+}
+
 /// 审批管理器。
 pub struct ApprovalManager {
     /// 当前审批模式。
     mode: ApprovalMode,
+    /// 当前能力开关。
+    capabilities: ApprovalCapabilities,
 }
 
 impl ApprovalManager {
     /// 创建审批管理器。
-    pub fn new(mode: ApprovalMode) -> Self {
-        Self { mode }
+    pub fn new(mode: ApprovalMode, capabilities: ApprovalCapabilities) -> Self {
+        Self { mode, capabilities }
     }
 
     /// 返回当前审批模式。
@@ -41,6 +72,13 @@ impl ApprovalManager {
         definition: &ToolDefinition,
         arguments: &Value,
     ) -> Result<ApprovalDecision> {
+        if let Some(reason) = self.blocked_by_capability(definition) {
+            return Ok(ApprovalDecision {
+                approved: false,
+                reason,
+            });
+        }
+
         match self.mode {
             ApprovalMode::FullAccess => Ok(ApprovalDecision {
                 approved: true,
@@ -96,6 +134,29 @@ impl ApprovalManager {
         Ok(decision)
     }
 
+    /// 判断能力开关是否直接阻断工具。
+    fn blocked_by_capability(&self, definition: &ToolDefinition) -> Option<String> {
+        match definition.risk_level {
+            ToolRiskLevel::Network if !self.capabilities.allow_network => Some(format!(
+                "当前配置已关闭网络能力，工具 {} 暂不可用。",
+                definition.name
+            )),
+            ToolRiskLevel::Execute if !self.capabilities.allow_shell => Some(format!(
+                "当前配置已关闭 Shell 执行能力，工具 {} 暂不可用。",
+                definition.name
+            )),
+            ToolRiskLevel::Write if !self.capabilities.allow_file_write => Some(format!(
+                "当前配置已关闭文件写入能力，工具 {} 暂不可用。",
+                definition.name
+            )),
+            ToolRiskLevel::Agent if !self.capabilities.allow_plugin_tool => Some(format!(
+                "当前配置已关闭扩展代理能力，工具 {} 暂不可用。",
+                definition.name
+            )),
+            _ => None,
+        }
+    }
+
     /// 通过命令行交互式向用户申请审批。
     fn ask_user(&self, definition: &ToolDefinition, arguments: &Value) -> Result<ApprovalDecision> {
         println!(
@@ -117,5 +178,79 @@ impl ApprovalManager {
                 "用户拒绝执行该工具。".to_string()
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::domain::{ApprovalMode, ToolRiskLevel};
+    use crate::tools::registry::ToolDefinition;
+
+    use super::{ApprovalCapabilities, ApprovalManager};
+
+    fn build_definition(name: &str, risk_level: ToolRiskLevel) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description: "测试工具".to_string(),
+            parameters_schema: json!({ "type": "object" }),
+            risk_level,
+            visible_to_model: true,
+        }
+    }
+
+    /// 验证能力开关关闭时会直接阻断写文件工具。
+    #[test]
+    fn should_block_write_tool_when_file_write_disabled() {
+        let manager = ApprovalManager::new(
+            ApprovalMode::FullAccess,
+            ApprovalCapabilities::new(true, true, false, true),
+        );
+        let decision = manager
+            .approve(
+                &build_definition("write_file", ToolRiskLevel::Write),
+                &json!({ "path": "a.txt" }),
+            )
+            .expect("审批失败");
+
+        assert!(!decision.approved);
+        assert!(decision.reason.contains("文件写入能力"));
+    }
+
+    /// 验证能力开关关闭时会阻断网络工具，返回中文不可用说明。
+    #[test]
+    fn should_block_network_tool_when_network_disabled() {
+        let manager = ApprovalManager::new(
+            ApprovalMode::FullAccess,
+            ApprovalCapabilities::new(false, true, true, true),
+        );
+        let decision = manager
+            .approve(
+                &build_definition("web_search", ToolRiskLevel::Network),
+                &json!({ "query": "rust" }),
+            )
+            .expect("审批失败");
+
+        assert!(!decision.approved);
+        assert!(decision.reason.contains("关闭网络能力"));
+    }
+
+    /// 验证 AutoApproveSafe 模式仍会自动放行低风险只读工具。
+    #[test]
+    fn should_auto_approve_readonly_tool_in_safe_mode() {
+        let manager = ApprovalManager::new(
+            ApprovalMode::AutoApproveSafe,
+            ApprovalCapabilities::new(true, false, false, false),
+        );
+        let decision = manager
+            .approve(
+                &build_definition("read_file", ToolRiskLevel::ReadOnly),
+                &json!({ "path": "a.txt" }),
+            )
+            .expect("审批失败");
+
+        assert!(decision.approved);
+        assert!(decision.reason.contains("自动放行"));
     }
 }

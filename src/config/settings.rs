@@ -48,6 +48,14 @@ pub struct Settings {
     pub skill_roots: Vec<PathBuf>,
     /// 单个 Skill 文件允许读取的最大字节数。
     pub max_skill_file_bytes: usize,
+    /// 是否允许网络工具。
+    pub allow_network: bool,
+    /// 是否允许 Shell 工具。
+    pub allow_shell: bool,
+    /// 是否允许写文件工具。
+    pub allow_file_write: bool,
+    /// 是否允许插件类工具。
+    pub allow_plugin_tool: bool,
 }
 
 impl Settings {
@@ -86,6 +94,10 @@ impl Settings {
             deepseek_base_url: "https://api.deepseek.com/chat/completions".to_string(),
             skill_roots: vec![workspace_root.join("skills"), home_skill_root],
             max_skill_file_bytes: 65_536,
+            allow_network: true,
+            allow_shell: false,
+            allow_file_write: false,
+            allow_plugin_tool: false,
         };
 
         if setting_file.exists() {
@@ -101,17 +113,20 @@ impl Settings {
 
             settings.default_model = ini
                 .get("model", "default")
+                .or_else(|| ini.get("api", "model"))
                 .filter(|value| !value.is_empty())
                 .unwrap_or(settings.default_model);
             settings.default_stream_output = ini
                 .getbool("model", "stream_output")
                 .ok()
                 .flatten()
+                .or_else(|| ini.getbool("cli", "stream_output").ok().flatten())
                 .unwrap_or(settings.default_stream_output);
             settings.max_rounds = ini
                 .getuint("limits", "max_rounds")
                 .ok()
                 .flatten()
+                .or_else(|| ini.getuint("agent", "max_rounds").ok().flatten())
                 .map(|value| value as usize)
                 .unwrap_or(settings.max_rounds);
             settings.invalid_arg_retry_limit = ini
@@ -134,6 +149,7 @@ impl Settings {
                 .unwrap_or(settings.tool_call_limit);
             settings.deepseek_base_url = ini
                 .get("deepseek", "base_url")
+                .or_else(|| ini.get("api", "base_url"))
                 .filter(|value| !value.is_empty())
                 .unwrap_or(settings.deepseek_base_url);
             settings.max_skill_file_bytes = ini
@@ -142,6 +158,30 @@ impl Settings {
                 .flatten()
                 .map(|value| value as usize)
                 .unwrap_or(settings.max_skill_file_bytes);
+            settings.default_approval_mode = parse_approval_mode(
+                ini.get("approval", "mode").as_deref(),
+                settings.default_approval_mode,
+            );
+            settings.allow_network = ini
+                .getbool("approval", "allow_network")
+                .ok()
+                .flatten()
+                .unwrap_or(settings.allow_network);
+            settings.allow_shell = ini
+                .getbool("approval", "allow_shell")
+                .ok()
+                .flatten()
+                .unwrap_or(settings.allow_shell);
+            settings.allow_file_write = ini
+                .getbool("approval", "allow_file_write")
+                .ok()
+                .flatten()
+                .unwrap_or(settings.allow_file_write);
+            settings.allow_plugin_tool = ini
+                .getbool("approval", "allow_plugin_tool")
+                .ok()
+                .flatten()
+                .unwrap_or(settings.allow_plugin_tool);
         }
 
         settings.ensure_layout()?;
@@ -161,10 +201,22 @@ impl Settings {
     }
 }
 
+fn parse_approval_mode(raw: Option<&str>, fallback: ApprovalMode) -> ApprovalMode {
+    match raw.unwrap_or_default().trim() {
+        "0" | "AskUser" => ApprovalMode::AskUser,
+        "1" | "AutoApproveSafe" => ApprovalMode::AutoApproveSafe,
+        "2" | "FullAccess" => ApprovalMode::FullAccess,
+        _ => fallback,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! 配置默认值测试。
     use std::path::Path;
+
+    use crate::domain::ApprovalMode;
+    use crate::utils::fs::write_utf8;
 
     use super::Settings;
 
@@ -175,5 +227,26 @@ mod tests {
         assert_eq!(settings.default_model, "deepseek-v4-flash");
         assert!(settings.is_allowed_model("deepseek-v4-pro"));
         assert_eq!(settings.max_skill_file_bytes, 65_536);
+        assert!(settings.allow_network);
+        assert!(!settings.allow_shell);
+        assert!(!settings.allow_file_write);
+    }
+
+    /// 验证可以从 approval 分组读取能力开关。
+    #[test]
+    fn should_load_approval_flags_from_ini() {
+        let workspace = Path::new("target/test_settings_with_approval_flags");
+        write_utf8(
+            &workspace.join("setting.ini"),
+            "[approval]\nmode=1\nallow_network=false\nallow_shell=true\nallow_file_write=true\nallow_plugin_tool=true\n",
+        )
+        .expect("写入 setting.ini 失败");
+
+        let settings = Settings::load(workspace).expect("加载带审批开关的配置失败");
+        assert_eq!(settings.default_approval_mode, ApprovalMode::AutoApproveSafe);
+        assert!(!settings.allow_network);
+        assert!(settings.allow_shell);
+        assert!(settings.allow_file_write);
+        assert!(settings.allow_plugin_tool);
     }
 }
