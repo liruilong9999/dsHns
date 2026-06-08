@@ -1,5 +1,4 @@
 //! 配置定义与加载逻辑。
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
@@ -47,6 +46,8 @@ pub struct Settings {
     pub deepseek_base_url: String,
     /// Skill 根目录列表。
     pub skill_roots: Vec<PathBuf>,
+    /// 单个 Skill 文件允许读取的最大字节数。
+    pub max_skill_file_bytes: usize,
 }
 
 impl Settings {
@@ -84,6 +85,7 @@ impl Settings {
             shell_program: "powershell".to_string(),
             deepseek_base_url: "https://api.deepseek.com/chat/completions".to_string(),
             skill_roots: vec![workspace_root.join("skills"), home_skill_root],
+            max_skill_file_bytes: 65_536,
         };
 
         if setting_file.exists() {
@@ -134,6 +136,12 @@ impl Settings {
                 .get("deepseek", "base_url")
                 .filter(|value| !value.is_empty())
                 .unwrap_or(settings.deepseek_base_url);
+            settings.max_skill_file_bytes = ini
+                .getuint("skill", "max_skill_file_bytes")
+                .ok()
+                .flatten()
+                .map(|value| value as usize)
+                .unwrap_or(settings.max_skill_file_bytes);
         }
 
         settings.ensure_layout()?;
@@ -156,7 +164,6 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     //! 配置默认值测试。
-
     use std::path::Path;
 
     use super::Settings;
@@ -167,5 +174,6 @@ mod tests {
         let settings = Settings::load(Path::new(".")).expect("加载默认配置失败");
         assert_eq!(settings.default_model, "deepseek-v4-flash");
         assert!(settings.is_allowed_model("deepseek-v4-pro"));
+        assert_eq!(settings.max_skill_file_bytes, 65_536);
     }
 }

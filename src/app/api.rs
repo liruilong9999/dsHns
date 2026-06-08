@@ -69,7 +69,8 @@ impl ApiApp {
     /// 创建服务应用。
     pub fn new(workspace_root: PathBuf) -> Result<Self> {
         let settings = Settings::load(&workspace_root)?;
-        let skill_manager = SkillManager::new(settings.skill_roots.clone());
+        let skill_manager =
+            SkillManager::with_limits(settings.skill_roots.clone(), settings.max_skill_file_bytes);
         let prompt_assembler = PromptAssembler::new(workspace_root, skill_manager);
         let store = Arc::new(SqliteStore::new(&settings.database_path)?);
         let session_manager = Arc::new(SessionManager::new(settings.clone(), store));
