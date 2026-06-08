@@ -158,6 +158,30 @@ struct GitBlameInput {
 }
 
 #[derive(Deserialize)]
+struct ExecShellInput {
+    command: String,
+    working_directory: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ExecShellWaitInput {
+    process_id: String,
+    idle_timeout_ms: Option<u64>,
+    max_lines: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct ExecShellInteractInput {
+    process_id: String,
+    input: String,
+}
+
+#[derive(Deserialize)]
+struct ExecShellCancelInput {
+    process_id: String,
+}
+
+#[derive(Deserialize)]
 struct RunShellInput {
     command: String,
     working_directory: Option<String>,
@@ -352,6 +376,22 @@ struct ManagedRlmProcess {
     stdout: BufReader<ChildStdout>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct ExecProcessRecord {
+    id: String,
+    shell_program: String,
+    working_directory: String,
+    status: String,
+    created_at: String,
+    updated_at: String,
+}
+
+struct ManagedExecProcess {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
 #[derive(serde::Serialize)]
 struct WebRunStepResult {
     step: String,
@@ -505,6 +545,10 @@ pub struct GitDiffTool;
 pub struct GitLogTool;
 pub struct GitShowTool;
 pub struct GitBlameTool;
+pub struct ExecShellTool;
+pub struct ExecShellWaitTool;
+pub struct ExecShellInteractTool;
+pub struct ExecShellCancelTool;
 
 #[async_trait]
 impl ToolHandler for EditFileTool {
@@ -969,6 +1013,179 @@ impl ToolHandler for GitBlameTool {
         };
         let command = format!("git blame {}-- {}", line_clause, relative_path.display());
         run_shell_command(&context.shell_program, &command, &root, 10_000).await
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ExecShellTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: ExecShellInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("exec_shell 参数非法：{}", error))?;
+        let working_directory = input
+            .working_directory
+            .map(|value| resolve_path(&context.workspace_root, &value))
+            .unwrap_or_else(|| context.workspace_root.clone());
+
+        let mut command = Command::new(&context.shell_program);
+        command
+            .arg("-NoProfile")
+            .arg("-NoLogo")
+            .arg("-Command")
+            .arg("-")
+            .current_dir(&working_directory)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command.spawn().context("启动后台 Shell 进程失败")?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("无法获取后台 Shell stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("无法获取后台 Shell stdout"))?;
+        let stdout = BufReader::new(stdout);
+
+        let process_id = Uuid::new_v4().to_string();
+        let process = ManagedExecProcess {
+            child,
+            stdin,
+            stdout,
+        };
+        exec_registry()
+            .lock()
+            .await
+            .insert(process_id.clone(), process);
+
+        {
+            let mut registry = exec_registry().lock().await;
+            let process = registry
+                .get_mut(&process_id)
+                .ok_or_else(|| anyhow!("后台 Shell 进程注册失败：{}", process_id))?;
+            process
+                .stdin
+                .write_all(format!("{} 2>&1\n", input.command).as_bytes())
+                .await
+                .context("写入后台 Shell 初始命令失败")?;
+            process
+                .stdin
+                .flush()
+                .await
+                .context("刷新后台 Shell stdin 失败")?;
+        }
+
+        persist_exec_record(
+            &context.session_dir,
+            ExecProcessRecord {
+                id: process_id.clone(),
+                shell_program: context.shell_program.clone(),
+                working_directory: working_directory.to_string_lossy().to_string(),
+                status: "running".to_string(),
+                created_at: crate::utils::time::now_rfc3339(),
+                updated_at: crate::utils::time::now_rfc3339(),
+            },
+        )?;
+        Ok(serde_json::json!({
+            "process_id": process_id,
+            "working_directory": working_directory,
+            "status": "running"
+        })
+        .to_string())
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ExecShellWaitTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: ExecShellWaitInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("exec_shell_wait 参数非法：{}", error))?;
+        let idle_timeout_ms = input.idle_timeout_ms.unwrap_or(200);
+        let max_lines = input.max_lines.unwrap_or(200);
+
+        let mut registry = exec_registry().lock().await;
+        let process = registry
+            .get_mut(&input.process_id)
+            .ok_or_else(|| anyhow!("未找到后台 Shell 进程：{}", input.process_id))?;
+
+        let mut output = String::new();
+        let mut lines = 0usize;
+        loop {
+            let mut line = String::new();
+            let read_future = process.stdout.read_line(&mut line);
+            match timeout(Duration::from_millis(idle_timeout_ms), read_future).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(_)) => {
+                    output.push_str(&line);
+                    lines += 1;
+                    if lines >= max_lines {
+                        break;
+                    }
+                }
+                Ok(Err(error)) => return Err(anyhow!("读取后台 Shell 输出失败：{}", error)),
+                Err(_) => break,
+            }
+        }
+
+        touch_exec_record(
+            &context.session_dir,
+            &input.process_id,
+            None,
+            Some("running"),
+        )?;
+        Ok(output.trim().to_string())
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ExecShellInteractTool {
+    async fn handle(&self, input: Value, _context: &ToolExecutionContext) -> Result<String> {
+        let input: ExecShellInteractInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("exec_shell_interact 参数非法：{}", error))?;
+        let mut registry = exec_registry().lock().await;
+        let process = registry
+            .get_mut(&input.process_id)
+            .ok_or_else(|| anyhow!("未找到后台 Shell 进程：{}", input.process_id))?;
+        process
+            .stdin
+            .write_all(format!("{} 2>&1\n", input.input).as_bytes())
+            .await
+            .context("写入后台 Shell 输入失败")?;
+        process
+            .stdin
+            .flush()
+            .await
+            .context("刷新后台 Shell stdin 失败")?;
+        Ok("已写入后台 Shell 输入。".to_string())
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ExecShellCancelTool {
+    async fn handle(&self, input: Value, context: &ToolExecutionContext) -> Result<String> {
+        let input: ExecShellCancelInput = serde_json::from_value(input)
+            .map_err(|error| anyhow!("exec_shell_cancel 参数非法：{}", error))?;
+        let mut registry = exec_registry().lock().await;
+        let mut process = registry
+            .remove(&input.process_id)
+            .ok_or_else(|| anyhow!("未找到后台 Shell 进程：{}", input.process_id))?;
+        process
+            .child
+            .kill()
+            .await
+            .context("终止后台 Shell 进程失败")?;
+        touch_exec_record(
+            &context.session_dir,
+            &input.process_id,
+            None,
+            Some("cancelled"),
+        )?;
+        Ok(serde_json::json!({
+            "process_id": input.process_id,
+            "status": "cancelled"
+        })
+        .to_string())
     }
 }
 
@@ -1846,6 +2063,12 @@ fn rlm_registry() -> &'static Arc<Mutex<std::collections::HashMap<String, Manage
     REGISTRY.get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new())))
 }
 
+fn exec_registry() -> &'static Arc<Mutex<std::collections::HashMap<String, ManagedExecProcess>>> {
+    static REGISTRY: OnceLock<Arc<Mutex<std::collections::HashMap<String, ManagedExecProcess>>>> =
+        OnceLock::new();
+    REGISTRY.get_or_init(|| Arc::new(Mutex::new(std::collections::HashMap::new())))
+}
+
 fn persist_rlm_record(session_dir: &Path, record: RlmProcessRecord) -> Result<()> {
     let path = session_dir
         .join(".tools")
@@ -1867,6 +2090,40 @@ fn touch_rlm_record(
         .join("rlm")
         .join("processes.json");
     let mut records = load_json_array::<RlmProcessRecord>(&path)?;
+    if let Some(index) = records.iter().position(|record| record.id == process_id) {
+        if let Some(working_directory) = working_directory {
+            records[index].working_directory = working_directory;
+        }
+        if let Some(status) = status {
+            records[index].status = status.to_string();
+        }
+        records[index].updated_at = crate::utils::time::now_rfc3339();
+        write_utf8(&path, &serde_json::to_string_pretty(&records)?)?;
+    }
+    Ok(())
+}
+
+fn persist_exec_record(session_dir: &Path, record: ExecProcessRecord) -> Result<()> {
+    let path = session_dir
+        .join(".tools")
+        .join("exec")
+        .join("processes.json");
+    let mut records = load_json_array::<ExecProcessRecord>(&path)?;
+    records.push(record);
+    write_utf8(&path, &serde_json::to_string_pretty(&records)?)
+}
+
+fn touch_exec_record(
+    session_dir: &Path,
+    process_id: &str,
+    working_directory: Option<String>,
+    status: Option<&str>,
+) -> Result<()> {
+    let path = session_dir
+        .join(".tools")
+        .join("exec")
+        .join("processes.json");
+    let mut records = load_json_array::<ExecProcessRecord>(&path)?;
     if let Some(index) = records.iter().position(|record| record.id == process_id) {
         if let Some(working_directory) = working_directory {
             records[index].working_directory = working_directory;

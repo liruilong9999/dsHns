@@ -12,12 +12,13 @@ use crate::skill::manager::SkillManager;
 use crate::tools::builtin::{
     AgentCloseTool, AgentEvalTool, AgentOpenTool, AutomationCreateTool, AutomationRunOnceTool,
     CallMcpTool, ConnectMcpServerTool, DiagnosticsTool, DiscoverMcpServersTool, EditFileTool,
-    FetchUrlTool, FileSearchTool, FimEditTool, GitBlameTool, GitDiffTool, GitLogTool, GitShowTool,
-    GitStatusTool, GithubGetTool, GrepFilesTool, HandleReadTool, ListDirTool, LoadSkillTool,
-    NoteTool, NotifyTool, PlanWriteTool, ProjectMapTool, ReadFileTool, ReadToolResultTool,
-    RecallArchiveTool, RememberTool, RetrieveToolResultTool, ReviewTool, RlmCloseTool,
-    RlmConfigureTool, RlmEvalTool, RlmOpenTool, RunShellTool, RunTestsTool, TaskCreateTool,
-    TaskRunTool, ValidateDataTool, WebRunTool, WebSearchTool, WriteFileTool,
+    ExecShellCancelTool, ExecShellInteractTool, ExecShellTool, ExecShellWaitTool, FetchUrlTool,
+    FileSearchTool, FimEditTool, GitBlameTool, GitDiffTool, GitLogTool, GitShowTool, GitStatusTool,
+    GithubGetTool, GrepFilesTool, HandleReadTool, ListDirTool, LoadSkillTool, NoteTool, NotifyTool,
+    PlanWriteTool, ProjectMapTool, ReadFileTool, ReadToolResultTool, RecallArchiveTool,
+    RememberTool, RetrieveToolResultTool, ReviewTool, RlmCloseTool, RlmConfigureTool, RlmEvalTool,
+    RlmOpenTool, RunShellTool, RunTestsTool, TaskCreateTool, TaskRunTool, ValidateDataTool,
+    WebRunTool, WebSearchTool, WriteFileTool,
 };
 
 /// 工具定义。
@@ -136,6 +137,109 @@ impl ToolRegistry {
                 ToolRiskLevel::Execute,
             ),
             Arc::new(RunShellTool),
+        );
+        registry.register(
+            tool_definition(
+                "exec_shell",
+                "启动后台 Shell 进程。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "后台 Shell 初始命令" },
+                        "working_directory": { "type": "string", "description": "可选执行目录" }
+                    },
+                    "required": ["command"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Execute,
+            ),
+            Arc::new(ExecShellTool),
+        );
+        registry.register(
+            tool_definition(
+                "exec_shell_wait",
+                "等待后台进程并拉取增量输出。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "process_id": { "type": "string", "description": "后台进程标识" },
+                        "idle_timeout_ms": { "type": "integer", "description": "空闲超时时间" },
+                        "max_lines": { "type": "integer", "description": "可选最大读取行数" }
+                    },
+                    "required": ["process_id"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Execute,
+            ),
+            Arc::new(ExecShellWaitTool),
+        );
+        registry.register(
+            tool_definition(
+                "exec_wait",
+                "exec_shell_wait 别名。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "process_id": { "type": "string", "description": "后台进程标识" },
+                        "idle_timeout_ms": { "type": "integer", "description": "空闲超时时间" },
+                        "max_lines": { "type": "integer", "description": "可选最大读取行数" }
+                    },
+                    "required": ["process_id"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Execute,
+            ),
+            Arc::new(ExecShellWaitTool),
+        );
+        registry.register(
+            tool_definition(
+                "exec_shell_interact",
+                "向后台进程写入标准输入。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "process_id": { "type": "string", "description": "后台进程标识" },
+                        "input": { "type": "string", "description": "待写入输入" }
+                    },
+                    "required": ["process_id", "input"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Execute,
+            ),
+            Arc::new(ExecShellInteractTool),
+        );
+        registry.register(
+            tool_definition(
+                "exec_interact",
+                "exec_shell_interact 别名。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "process_id": { "type": "string", "description": "后台进程标识" },
+                        "input": { "type": "string", "description": "待写入输入" }
+                    },
+                    "required": ["process_id", "input"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Execute,
+            ),
+            Arc::new(ExecShellInteractTool),
+        );
+        registry.register(
+            tool_definition(
+                "exec_shell_cancel",
+                "终止后台进程。",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "process_id": { "type": "string", "description": "后台进程标识" }
+                    },
+                    "required": ["process_id"],
+                    "additionalProperties": false
+                }),
+                ToolRiskLevel::Execute,
+            ),
+            Arc::new(ExecShellCancelTool),
         );
         registry.register(
             tool_definition(
