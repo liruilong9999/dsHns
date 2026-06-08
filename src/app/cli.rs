@@ -93,6 +93,17 @@ impl CliApp {
                         session.status.as_str(),
                         session.round
                     );
+                    if let Ok(Some(stats)) = self.harness.latest_current_token_usage() {
+                        println!(
+                            "Token 统计：输入 {}，输出 {}，缓存命中率 {:.2}%，剩余上下文 {}",
+                            stats.input_tokens,
+                            stats.output_tokens,
+                            stats.cache_hit_rate * 100.0,
+                            stats.remaining_context
+                        );
+                    } else {
+                        println!("Token 统计：暂无已执行轮次的统计数据");
+                    }
                 } else {
                     println!("当前尚未选择会话。");
                 }
@@ -161,7 +172,10 @@ impl CliApp {
             }
             ["/workspace", "restore", key] => {
                 let workspace = self.harness.restore_workspace(key)?;
-                println!("工作区已恢复：{}（{}）", workspace.project_name, workspace.id);
+                println!(
+                    "工作区已恢复：{}（{}）",
+                    workspace.project_name, workspace.id
+                );
             }
             ["/audit", "list"] => {
                 let audits = self.harness.list_deletion_audits(None)?;

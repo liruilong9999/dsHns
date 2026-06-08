@@ -266,10 +266,7 @@ impl SessionManager {
     }
 
     /// 列出某个会话的工具调用记录。
-    pub fn list_tool_calls(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<crate::domain::ToolCallRecord>> {
+    pub fn list_tool_calls(&self, session_id: &str) -> Result<Vec<crate::domain::ToolCallRecord>> {
         self.store.list_tool_calls(session_id)
     }
 
@@ -290,11 +287,7 @@ impl SessionManager {
     }
 
     /// 按句柄读取工具结果正文。
-    pub fn read_tool_result_by_handle(
-        &self,
-        session_id: &str,
-        handle: &str,
-    ) -> Result<String> {
+    pub fn read_tool_result_by_handle(&self, session_id: &str, handle: &str) -> Result<String> {
         let record = if let Some(record) = self
             .list_tool_result_indexes(session_id)?
             .into_iter()

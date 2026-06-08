@@ -17,6 +17,19 @@ pub struct EventBus {
     session_dir: PathBuf,
 }
 
+/// 最新 Token 统计快照。
+#[derive(Debug, Clone, Default)]
+pub struct TokenUsageSnapshot {
+    /// 输入 Token。
+    pub input_tokens: usize,
+    /// 输出 Token。
+    pub output_tokens: usize,
+    /// 缓存命中率。
+    pub cache_hit_rate: f64,
+    /// 剩余上下文。
+    pub remaining_context: usize,
+}
+
 impl EventBus {
     /// 创建事件总线。
     pub fn new(session_dir: PathBuf) -> Self {
@@ -181,6 +194,38 @@ impl EventBus {
         let content =
             read_optional_utf8(&self.events_file_path())?.unwrap_or_else(|| "[]".to_string());
         Ok(serde_json::from_str(&content).unwrap_or_default())
+    }
+
+    /// 读取最近一次 Token 统计。
+    pub fn latest_token_usage(&self) -> Result<Option<TokenUsageSnapshot>> {
+        let events = self.list_events()?;
+        let snapshot = events
+            .into_iter()
+            .rev()
+            .find(|event| matches!(event.event_type, EventType::TokenUsageUpdated))
+            .map(|event| TokenUsageSnapshot {
+                input_tokens: event
+                    .payload
+                    .get("input_tokens")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_default() as usize,
+                output_tokens: event
+                    .payload
+                    .get("output_tokens")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_default() as usize,
+                cache_hit_rate: event
+                    .payload
+                    .get("cache_hit_rate")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0),
+                remaining_context: event
+                    .payload
+                    .get("remaining_context")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_default() as usize,
+            });
+        Ok(snapshot)
     }
 
     /// 写入通用事件。

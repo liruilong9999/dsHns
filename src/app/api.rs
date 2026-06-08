@@ -214,7 +214,11 @@ async fn list_tool_results(
     State(state): State<ApiState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<Vec<ToolResultRecord>>, ApiError> {
-    Ok(Json(state.session_manager.list_tool_result_indexes(&session_id)?))
+    Ok(Json(
+        state
+            .session_manager
+            .list_tool_result_indexes(&session_id)?,
+    ))
 }
 
 async fn get_tool_result_body(

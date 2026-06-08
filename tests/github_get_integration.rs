@@ -32,10 +32,7 @@ async fn should_get_github_api_with_mock_server() {
         token: String,
     }
 
-    async fn github_me(
-        State(state): State<AppState>,
-        headers: axum::http::HeaderMap,
-    ) -> String {
+    async fn github_me(State(state): State<AppState>, headers: axum::http::HeaderMap) -> String {
         let auth = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())

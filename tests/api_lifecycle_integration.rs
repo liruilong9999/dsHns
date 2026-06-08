@@ -89,7 +89,10 @@ async fn should_delete_restore_workspace_and_read_tool_result_body() {
         .expect("读取工具结果正文响应失败");
     let body_json: serde_json::Value =
         serde_json::from_slice(&body).expect("解析工具结果正文响应失败");
-    assert_eq!(body_json.get("output").and_then(serde_json::Value::as_str), Some("external body"));
+    assert_eq!(
+        body_json.get("output").and_then(serde_json::Value::as_str),
+        Some("external body")
+    );
 
     let workspaces = router
         .clone()
@@ -126,12 +129,11 @@ async fn should_delete_restore_workspace_and_read_tool_result_body() {
         .await
         .expect("删除 workspace 请求失败");
     assert_eq!(delete_workspace.status(), StatusCode::OK);
-    let delete_workspace_body =
-        axum::body::to_bytes(delete_workspace.into_body(), usize::MAX)
-            .await
-            .expect("读取删除 workspace 响应失败");
-    let deleted_workspace: serde_json::Value = serde_json::from_slice(&delete_workspace_body)
-        .expect("解析删除 workspace 响应失败");
+    let delete_workspace_body = axum::body::to_bytes(delete_workspace.into_body(), usize::MAX)
+        .await
+        .expect("读取删除 workspace 响应失败");
+    let deleted_workspace: serde_json::Value =
+        serde_json::from_slice(&delete_workspace_body).expect("解析删除 workspace 响应失败");
     let workspace_audit_id = deleted_workspace
         .get("audit_id")
         .and_then(serde_json::Value::as_str)

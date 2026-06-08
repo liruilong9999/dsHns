@@ -544,9 +544,15 @@ impl SqliteStore {
                 status: row.get(5)?,
                 success: row.get::<_, i64>(6)? != 0,
                 failure_type: match row.get::<_, Option<String>>(7)? {
-                    Some(value) if value == "InvalidArgs" => Some(crate::domain::ToolFailureType::InvalidArgs),
-                    Some(value) if value == "ApprovalDenied" => Some(crate::domain::ToolFailureType::ApprovalDenied),
-                    Some(value) if value == "ExecError" => Some(crate::domain::ToolFailureType::ExecError),
+                    Some(value) if value == "InvalidArgs" => {
+                        Some(crate::domain::ToolFailureType::InvalidArgs)
+                    }
+                    Some(value) if value == "ApprovalDenied" => {
+                        Some(crate::domain::ToolFailureType::ApprovalDenied)
+                    }
+                    Some(value) if value == "ExecError" => {
+                        Some(crate::domain::ToolFailureType::ExecError)
+                    }
                     _ => None,
                 },
                 error_message: row.get(8)?,

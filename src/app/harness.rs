@@ -127,6 +127,17 @@ impl Harness {
         EventBus::new(session.session_dir.clone()).list_events()
     }
 
+    /// 读取当前会话最近一次 Token 统计。
+    pub fn latest_current_token_usage(
+        &self,
+    ) -> Result<Option<crate::ipc::bus::TokenUsageSnapshot>> {
+        let session = self
+            .current_session
+            .as_ref()
+            .ok_or_else(|| anyhow!("当前尚未选择会话，无法查看 Token 统计"))?;
+        EventBus::new(session.session_dir.clone()).latest_token_usage()
+    }
+
     /// 列出当前会话的工作记忆。
     pub fn list_current_working_memories(&self) -> Result<Vec<crate::domain::WorkingMemoryEntry>> {
         let session = self
@@ -146,9 +157,7 @@ impl Harness {
     }
 
     /// 列出当前会话的工具调用记录。
-    pub fn list_current_tool_calls(
-        &self,
-    ) -> Result<Vec<crate::domain::ToolCallRecord>> {
+    pub fn list_current_tool_calls(&self) -> Result<Vec<crate::domain::ToolCallRecord>> {
         let session = self
             .current_session
             .as_ref()
@@ -157,9 +166,7 @@ impl Harness {
     }
 
     /// 列出当前会话的工具结果索引。
-    pub fn list_current_tool_results(
-        &self,
-    ) -> Result<Vec<crate::domain::ToolResultRecord>> {
+    pub fn list_current_tool_results(&self) -> Result<Vec<crate::domain::ToolResultRecord>> {
         let session = self
             .current_session
             .as_ref()

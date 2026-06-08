@@ -144,12 +144,11 @@ async fn should_query_tool_result_body_and_delete_restore_workspace() {
         .await
         .expect("删除 workspace 请求失败");
     assert_eq!(delete_workspace.status(), StatusCode::OK);
-    let delete_workspace_body =
-        axum::body::to_bytes(delete_workspace.into_body(), usize::MAX)
-            .await
-            .expect("读取删除 workspace 响应失败");
-    let deleted_workspace: serde_json::Value = serde_json::from_slice(&delete_workspace_body)
-        .expect("解析删除 workspace 响应失败");
+    let delete_workspace_body = axum::body::to_bytes(delete_workspace.into_body(), usize::MAX)
+        .await
+        .expect("读取删除 workspace 响应失败");
+    let deleted_workspace: serde_json::Value =
+        serde_json::from_slice(&delete_workspace_body).expect("解析删除 workspace 响应失败");
     let workspace_audit_id = deleted_workspace
         .get("audit_id")
         .and_then(serde_json::Value::as_str)

@@ -585,8 +585,8 @@ impl ToolHandler for GithubGetTool {
         } else {
             format!("/{}", input.endpoint)
         };
-        let base_url =
-            std::env::var("GITHUB_API_BASE_URL").unwrap_or_else(|_| "https://api.github.com".to_string());
+        let base_url = std::env::var("GITHUB_API_BASE_URL")
+            .unwrap_or_else(|_| "https://api.github.com".to_string());
         let url = format!("{}{}", base_url.trim_end_matches('/'), endpoint);
         let client = Client::new();
         client
