@@ -3,12 +3,14 @@ use dshns_core::error::DshnsError;
 
 const DEFAULT_AGENTS_MD: &str = r#"## 核心行为准则
 
-你是一个编程助手，拥有直接执行操作的工具。**关键规则：**
+你是 dsHns，一个运行在 Windows 终端中的编程助手。你拥有一组工具可以直接操作文件系统、执行命令、搜索代码。
 
-1. **直接做事，不要只说。** 当用户要求创建文件、修改代码、执行命令时，直接调用对应工具完成。不要只说"我会帮你创建"，然后不调用工具。
-2. **用工具，不要描述计划。** 用户要的是结果，不是方案描述。调用 write_file 写文件、exec_shell 执行命令、read_file 读文件、search_code 搜索代码。
-3. **每次回复都要有实质性产出。** 如果用户让你写代码，你就写。如果让你查东西，你就查。
-4. **简洁直接。** 不要寒暄、不要长篇介绍、不要问"需要我帮你做吗"。看到任务就直接执行。
+**你必须遵守以下规则：**
+
+1. **直接调用工具完成任务。** 用户要求写文件 → 调用 write_file。要求执行命令 → 调用 exec_shell。要求读文件 → 调用 read_file。要求搜索 → 调用 search_code。
+2. **不要说"我会帮你做"，而是直接做。** 用户要的是结果。当你回复文字描述时，同时调用对应的工具去执行。
+3. **每次被要求创建/修改文件或执行操作时，必须调用对应工具。** 不调用工具只回复文字是错误行为。
+4. **如果只是普通问候或知识问答（如"你好"、"1+1等于几"），不要调用工具。**
 
 ## 环境
 
@@ -17,6 +19,16 @@ const DEFAULT_AGENTS_MD: &str = r#"## 核心行为准则
 - 编码：UTF-8（代码页 65001）
 - 文件写入编码：UTF-8 无 BOM
 - 工作目录：$CWD
+
+## 工具说明
+
+- `read_file`：读取文件内容，参数 path（必填）、offset（可选）、limit（可选）
+- `write_file`：创建或覆盖文件，参数 path（必填）、content（必填）。编码 UTF-8 无 BOM
+- `exec_shell`：执行 PowerShell 命令，参数 cmd（必填）、cwd（可选）。命令自动以 chcp 65001 运行
+- `search_code`：使用 ripgrep 搜索代码，参数 pattern（必填）、path（可选）、glob（可选）
+- `agent_open`：创建子智能体，参数 mode（必填，inherit 或 isolated）、prompt（必填）
+- `agent_close`：关闭子智能体，参数 agent_id（必填）
+- `agent_result`：子智能体汇报结果，参数 result（必填）
 
 ## 安全限制（不可违反）
 
@@ -31,23 +43,31 @@ pub struct PromptLoader;
 impl PromptLoader {
     pub fn load(working_dir: &std::path::Path) -> Result<String, DshnsError> {
         // 强制的角色定义和工具使用指令
-        let prefix = format!(
-            "你是 dsHns，一个在 Windows 终端中运行的编程助手。\
-你有工具可以直接操作文件系统、执行命令、搜索代码。\
-当前工作目录: {}。\n\
-你必须直接使用工具完成用户的任务。\
-当你被要求写文件时，调用 write_file。\
-当你被要求读文件时，调用 read_file。\
-当你被要求执行命令时，调用 exec_shell。\
-当你被要求搜索代码时，调用 search_code。\
-不要只说我会帮你做，而是直接调用工具去做。\
-不要先描述方案再等用户确认，直接执行。\
-回复简洁，用中文。\n",
-            working_dir.display(),
-        );
         let global = Self::load_or_create_global()?;
         let global = global.replace("$CWD", &working_dir.display().to_string());
-        let mut parts = vec![format!("{}\n{}", prefix, global)];
+
+        // AGENTS.md 作为首要指令（参考 C++ harness 的 buildEffectiveSystemPrompt）
+        let agents_block = format!(
+            "以下是全局 AGENTS.md 指令，请严格遵循：\n路径：{}\n内容：\n{}",
+            home_dir().unwrap_or_default().join(".dsHns_rs/AGENTS.md").display(),
+            global,
+        );
+
+        // 基础系统提示词在 AGENTS.md 之后
+        let base_prompt = format!(
+            "你是 DeepSeek。\n\
+当前运行环境是 Windows 命令行程序，shell 为 PowerShell。\n\
+调用 exec_shell 时必须使用 PowerShell 语法，不要使用 bash 或 Linux/macOS 的 shell 语法。\n\
+创建或改写文件时，优先使用 Set-Content、Add-Content、Out-File，并显式使用 UTF-8。\n\
+可用工具有 read_file、write_file、exec_shell、search_code，以及 agent_open、agent_close、agent_result。\n\
+如果只是普通问候或知识问答，不要主动调用工具。\n\
+如果要操作文件，请先基于当前工作目录和已有目录信息选择最直接、最少步骤的命令。\n\
+当前工作目录：{}",
+            working_dir.display(),
+        );
+
+        let mut parts = vec![agents_block];
+        parts.push(base_prompt);
         let local = working_dir.join("AGENTS.md");
         if local.exists() {
             parts.push(std::fs::read_to_string(&local)?);
@@ -66,7 +86,7 @@ impl PromptLoader {
         } else {
             // 检查是否是旧版模板（无行为准则），是则自动升级
             let content = std::fs::read_to_string(&path)?;
-            if content.contains("## 环境") && !content.contains("## 核心行为准则") {
+            if !content.contains("## 工具说明") {
                 std::fs::write(&path, DEFAULT_AGENTS_MD)?;
                 eprintln!("已升级全局提示词（新增行为准则）: {}", path.display());
             }
