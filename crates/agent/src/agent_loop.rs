@@ -50,6 +50,7 @@ impl AgentLoop {
     }
 
     pub fn set_allowed_tools(&mut self, tools: Vec<String>) { self.allowed_tools = Some(tools); }
+    pub async fn approval_mode(&self) -> ApprovalMode { self.approver.lock().await.mode() }
     pub async fn set_approval_mode(&self, mode: ApprovalMode) { self.approver.lock().await.set_mode(mode); }
 
     pub async fn run(&self, user_input: &str, history: Vec<Message>, event_tx: mpsc::UnboundedSender<AgentEvent>) -> Result<AgentOutcome, DshnsError> {

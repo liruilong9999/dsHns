@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use dshns_core::config::ApprovalMode;
 use dshns_core::event::AgentEvent;
 use dshns_core::message::Message;
 use dshns_core::tool::ToolStatus;
@@ -37,6 +38,11 @@ impl Repl {
                     "exit" | "e" | "quit" | "q" => break,
                     "help" | "h" => Self::help(),
                     "clear" => print!("\x1B[2J\x1B[1;1H"),
+                    "mode" => Self::show_mode(&self.agent).await,
+                    cmd if cmd.starts_with("mode ") => {
+                        let mode_str = cmd.strip_prefix("mode ").unwrap().trim();
+                        Self::switch_mode(&self.agent, mode_str).await;
+                    }
                     _ => self.process(&line).await?,
                 }
             } else {
@@ -97,7 +103,33 @@ impl Repl {
     }
 
     fn help() {
-        println!("/help, /h  帮助  /exit, /e  退出  /clear  清屏  Ctrl+C  中断  输入内容  发给 AI");
+        println!("/help, /h          帮助");
+        println!("/exit, /e          退出");
+        println!("/clear             清屏");
+        println!("/mode              查看当前审批模式");
+        println!("/mode <auto|confirm|paranoid>  切换审批模式");
+        println!("Ctrl+C             中断当前 Agent 循环");
+    }
+
+    async fn show_mode(agent: &Arc<AgentLoop>) {
+        let mode = agent.approval_mode().await;
+        let (name, desc) = match mode {
+            ApprovalMode::Auto => ("auto", "全自动执行，无需确认"),
+            ApprovalMode::Confirm => ("confirm", "危险操作需确认 (删除/系统路径/下载执行)"),
+            ApprovalMode::Paranoid => ("paranoid", "所有工具调用都需要确认"),
+        };
+        println!("当前审批模式: {} — {}", name, desc);
+    }
+
+    async fn switch_mode(agent: &Arc<AgentLoop>, mode_str: &str) {
+        let mode = ApprovalMode::from_str(mode_str);
+        let name = match mode {
+            ApprovalMode::Auto => "auto",
+            ApprovalMode::Confirm => "confirm",
+            ApprovalMode::Paranoid => "paranoid",
+        };
+        agent.set_approval_mode(mode).await;
+        println!("已切换到: {}", name);
     }
 }
 
