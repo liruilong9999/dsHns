@@ -12,6 +12,7 @@ pub struct DeepSeekClient {
     http: HttpClient,
     api_key: String,
     base_url: String,
+    #[allow(dead_code)]  // 后续用于动态模型名/温度等
     config: ApiConfig,
 }
 
