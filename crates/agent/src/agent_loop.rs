@@ -19,7 +19,7 @@ pub struct AgentLoop {
     config: AgentConfig,
     context_manager: ContextManager,
     safety_guard: SafetyGuard,
-    approver: std::sync::Mutex<Approver>,
+    approver: tokio::sync::Mutex<Approver>,
     pub depth: u8,
     allowed_tools: Option<Vec<String>>,
     system_prompt: String,
@@ -44,13 +44,13 @@ impl AgentLoop {
             client, executor, registry, config,
             context_manager: ContextManager::new(context_config),
             safety_guard: SafetyGuard::new(),
-            approver: std::sync::Mutex::new(Approver::new(approval_mode)),
+            approver: tokio::sync::Mutex::new(Approver::new(approval_mode)),
             depth, allowed_tools: None, system_prompt,
         }
     }
 
     pub fn set_allowed_tools(&mut self, tools: Vec<String>) { self.allowed_tools = Some(tools); }
-    pub fn set_approval_mode(&self, mode: ApprovalMode) { self.approver.lock().unwrap().set_mode(mode); }
+    pub async fn set_approval_mode(&self, mode: ApprovalMode) { self.approver.lock().await.set_mode(mode); }
 
     pub async fn run(&self, user_input: &str, history: Vec<Message>, event_tx: mpsc::UnboundedSender<AgentEvent>) -> Result<AgentOutcome, DshnsError> {
         let _ = event_tx.send(AgentEvent::UserInput(user_input.into()));
@@ -137,11 +137,30 @@ impl AgentLoop {
                     continue;
                 }
                 // 软审批
-                match self.approver.lock().unwrap().check(call) {
+                let verdict = self.approver.lock().await.check(call);
+                match verdict {
                     ApprovalVerdict::NeedsConfirmation { reason } => {
-                        let _ = event_tx.send(AgentEvent::ToolConfirmationNeeded { call: call.clone(), reason });
-                        // TODO: 等待用户 y/n — MVP 暂时跳过
-                        continue;
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        let _ = event_tx.send(AgentEvent::ToolConfirmationNeeded {
+                            call: call.clone(), reason, response_tx: tx,
+                        });
+                        // 等待用户在 REPL 中回复 y/n
+                        match rx.await {
+                            Ok(true) => { /* 用户批准，继续执行 */ }
+                            Ok(false) | Err(_) => {
+                                // 用户拒绝或 channel 关闭
+                                let _ = event_tx.send(AgentEvent::ToolExecution {
+                                    call_id: call.id.clone(),
+                                    status: ToolStatus::Denied,
+                                    summary: "用户拒绝".into(),
+                                });
+                                messages.push(Message::Tool {
+                                    tool_call_id: call.id.clone(),
+                                    content: "用户拒绝了此操作".into(),
+                                });
+                                continue;
+                            }
+                        }
                     }
                     ApprovalVerdict::Allow => {}
                 }

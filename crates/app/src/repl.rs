@@ -59,6 +59,16 @@ impl Repl {
                 AgentEvent::Thinking(d) => { print!("{}", d); use std::io::Write; std::io::stdout().flush().ok(); }
                 AgentEvent::ToolCallStart { name, .. } => println!("\n  🔧 {}", name),
                 AgentEvent::ToolBlocked { reason, .. } => println!("\n  🚫 {}", reason),
+                AgentEvent::ToolConfirmationNeeded { call, reason, response_tx } => {
+                    println!("\n  ⚠ 需要确认: {}\n  > {}", reason, call.arguments);
+                    print!("  是否执行? [y/n] ");
+                    use std::io::Write;
+                    std::io::stdout().flush().ok();
+                    let mut answer = String::new();
+                    std::io::stdin().read_line(&mut answer).ok();
+                    let approved = matches!(answer.trim().to_lowercase().as_str(), "y" | "yes");
+                    let _ = response_tx.send(approved);
+                }
                 AgentEvent::ToolExecution { status, summary, .. } => match status {
                     ToolStatus::Success => println!("  ✓ {}", summary),
                     ToolStatus::Error { reason } => println!("  ✗ {}", reason),
