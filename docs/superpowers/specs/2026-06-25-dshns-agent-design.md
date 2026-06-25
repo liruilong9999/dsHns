@@ -63,7 +63,8 @@ dshns/
 │   │   └── src/
 │   │       ├── loop.rs         # AgentLoop（事件管道主循环）
 │   │       ├── context.rs      # ContextManager（消息组装 + 上下文压缩）
-│   │       └── approval.rs     # Approver（审批模式）
+│   │       ├── safety.rs       # SafetyGuard（硬限制，不可绕过）
+│   │       └── approval.rs     # Approver（软审批模式）
 │   │
 │   ├── session-store/          # 会话持久化 + 记忆
 │   │   └── src/
@@ -177,10 +178,43 @@ pub trait Tool: Send + Sync {
 |------|------|---------|
 | `read_file` | 读取文件内容 | path, offset(可选), limit(可选) |
 | `write_file` | 写入/覆盖文件 | path, content |
-| `exec_shell` | 执行 shell 命令 | cmd, cwd(可选) |
+| `exec_shell` | 执行 shell 命令（受安全限制） | cmd, cwd(可选) |
 | `search_code` | 代码搜索（调 ripgrep） | pattern, path(可选), glob(可选) |
 
-### 4.4 工具结果截断
+### 4.4 exec_shell 安全硬限制
+
+以下命令**硬性禁止执行**（不可配置，不可绕过，所有审批模式下均拒绝）：
+
+| 禁止命令 | 原因 |
+|---------|------|
+| `rm -rf` / `rm -r -f` / `rm --recursive --force` | 递归强制删除风险极高，必须逐个文件确认删除 |
+| `sudo` / `su` | 提权操作禁止 |
+| `chmod 777` | 过于宽松的权限 |
+| `mkfs.*` / `dd` | 磁盘操作 |
+| `> /dev/sda*` | 块设备覆写 |
+| `:(){ :|:& };:` | fork bomb |
+| `chown -R /` | 递归修改根目录所有者 |
+
+**`rm` 具体行为：**
+- `rm -rf` 和所有变体 → 硬拒绝，返回错误："`rm -rf` 已被禁止。请明确列出要删除的每个文件并逐个使用 `rm <文件路径>`。"
+- `rm <单个文件>` → 允许（受审批模式控制）
+- `rm -r <目录>` → 允许但需逐项确认（受审批模式控制）
+
+**提示词层面约束：**
+
+全局 AGENTS.md 模板中默认包含以下规则：
+
+```markdown
+## 安全限制（不可违反）
+
+- 禁止使用 `rm -rf` 及任何变体。需要删除文件时，必须逐个指定文件路径
+- 禁止使用 `sudo`、`su` 等提权命令
+- 禁止对系统目录（/etc、/boot、/sys 等）进行写操作
+- 禁止下载并直接执行未经用户审查的脚本（curl | bash 等模式）
+- exec_shell 执行前应确认命令的安全性
+```
+
+### 4.5 工具结果截断
 
 单次工具结果超过 `max_tool_result_tokens`（配置项，默认 8000 tokens）时，截断为"头 40% + 尾 50% + 省略标记"。
 
@@ -200,11 +234,15 @@ graph TD
     D -->|Finished| G{有未执行的 tool call?}
     E --> D
     F --> D
-    G -->|是| H[Approver.check 审批]
+    G -->|是| H[SafetyGuard.check 硬限制检查]
     G -->|否| I[返回最终响应]
-    H -->|通过| J[ToolExecutor.exec_one/exec_many]
-    H -->|拒绝| K[tool result = denied]
-    J --> L[ToolOutcome → Tool Message]
+    H -->|硬禁止| J[tool result = 硬拒绝]
+    H -->|通过| K[Approver.check 审批]
+    K -->|通过| L[ToolExecutor.exec_one/exec_many]
+    K -->|拒绝| M[tool result = 用户拒绝]
+    L --> N[ToolOutcome → Tool Message]
+    J --> N
+    M --> N
     K --> L
     L --> M[追加到消息历史]
     M --> N{达到最大轮数?}
@@ -220,7 +258,8 @@ pub struct AgentLoop {
     executor: Arc<ToolExecutor>,
     config: AgentConfig,
     context_manager: ContextManager,
-    approver: Approver,
+    safety_guard: SafetyGuard,  // 硬限制（不可绕过）
+    approver: Approver,        // 软限制（审批模式）
 }
 ```
 
@@ -250,6 +289,7 @@ pub enum AgentEvent {
     UserInput(String),                        // 用户刚提交
     Thinking(String),                         // 流式文本增量
     ToolCallStart { id: String, name: String },
+    ToolBlocked { call: ToolCall, reason: String },  // 硬限制拒绝
     ToolExecution { call_id: String, status: ToolStatus, summary: String },
     ToolConfirmationNeeded { call: ToolCall, reason: String },  // 需用户确认
     TurnComplete { usage: Usage, tool_rounds: u32 },
@@ -395,38 +435,86 @@ default = "auto"                  # auto | confirm | paranoid
 
 ## 十、工具调用策略
 
-### 10.1 Tool Choice
+### 10.1 双层安全检查
+
+所有工具调用前经过两层检查，**先硬后软**：
+
+```
+ToolCall 到来
+  → SafetyGuard.check（硬限制，不可绕过）
+    → 命中禁止列表 → 硬拒绝（tool result 返回错误信息）
+    → 通过
+  → Approver.check（软限制，审批模式控制）
+    → auto: 直接放行
+    → confirm: 危险操作需用户确认
+    → paranoid: 全部需用户确认
+```
+
+### 10.2 硬限制列表（SafetyGuard）
+
+以下命令**在任何模式下均硬性拒绝**，错误信息反馈给模型，让模型换方案：
+
+| 禁止模式 | 拒绝原因 |
+|---------|---------|
+| `rm -rf` / `rm -r -f` / `rm --recursive --force` | 递归强制删除已被禁止，请明确列出每个要删除的文件路径，使用 `rm <文件路径>` 逐个删除 |
+| `sudo` / `su` | 提权操作已被禁止 |
+| `chmod 777` | 过于宽松的权限设置已被禁止 |
+| `mkfs.*` / `dd of=/dev/*` | 磁盘格式化/覆写已被禁止 |
+| `chown -R /` | 递归修改根目录所有者已被禁止 |
+| fork bomb 模式 | 系统资源滥用已被禁止 |
+
+### 10.3 Tool Choice
 
 MVP 全部使用 `Auto`（模型自主决定是否调用工具）。
 
-### 10.2 并行执行
+### 10.4 并行执行
 
 当模型在同一 response 中返回多个 tool_call 时，MVP 默认全部并行执行（`tokio::join!`）。
 
-### 10.3 连续失败保护
+### 10.5 连续失败保护
 
-连续工具执行失败 ≥ 5 次时，主动终止当前轮次，返回错误信息给用户。
+- 硬拒绝不计入失败次数（告诉模型换方案是正常流程）
+- 执行失败（ToolStatus::Error）连续 ≥ 5 次时，主动终止当前轮次
 
-### 10.4 工具结果注入格式
+### 10.6 工具结果注入格式
 
 - 成功：`"工具 <name> 执行成功：\n<content>"`
 - 失败：`"工具 <name> 执行失败：<reason>"`
 - 超时：`"工具 <name> 执行超时（<timeout>s），请尝试其他方式"`
-- 被拒：`"用户拒绝了此操作"`
+- 硬拒绝：`"<name> 已被系统禁止：<reason>。请使用其他方式。"`
+- 用户拒绝：`"用户拒绝了此操作"`
 
 ---
 
 ## 十一、审批模式系统
 
-### 11.1 三种模式
+### 11.1 硬限制 vs 软限制
+
+| 类型 | 机制 | 可配置 | 可绕过 |
+|------|------|--------|--------|
+| 硬限制（SafetyGuard） | 系统级，代码写死 | 否 | 否 |
+| 软限制（Approver） | 审批模式控制 | 是（settings.toml + /mode） | 是（换模式即可） |
+
+### 11.2 三种软审批模式
 
 | 模式 | 配置值 | 行为 |
 |------|--------|------|
-| 全自动 | `auto` | 所有工具直接执行，无需确认 |
-| 危险确认 | `confirm` | 仅危险 shell 命令（rm/sudo/chmod）需确认 |
+| 全自动 | `auto` | 所有工具直接执行（硬限制仍生效） |
+| 危险确认 | `confirm` | 危险命令需确认，安全操作直接放行 |
 | 全确认 | `paranoid` | 所有工具调用都需要用户确认 |
 
-### 11.2 模式切换
+### 11.3 危险命令判定（confirm 模式）
+
+以下模式触发确认（硬限制列表之外的危险操作）：
+
+- `rm <文件>`（单个删除需确认）
+- `rm -r <目录>`（递归删除需确认）
+- `chmod`（权限变更需确认）
+- `curl ... | bash` / `wget ... | sh`（管道执行需确认）
+- 任何写入 `/etc/`、`/boot/`、`/sys/`、`~/.ssh/` 的操作
+- 任何访问外网 IP 的 curl/wget（非 API 域名）
+
+### 11.4 模式切换
 
 ```toml
 # settings.toml 中配置默认值
