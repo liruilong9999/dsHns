@@ -177,40 +177,74 @@ pub trait Tool: Send + Sync {
 | 工具 | 功能 | 关键参数 |
 |------|------|---------|
 | `read_file` | 读取文件内容 | path, offset(可选), limit(可选) |
-| `write_file` | 写入/覆盖文件 | path, content |
-| `exec_shell` | 执行 shell 命令（受安全限制） | cmd, cwd(可选) |
+| `write_file` | 写入/覆盖文件（UTF-8 编码） | path, content |
+| `exec_shell` | 执行 PowerShell 命令（Windows） | cmd, cwd(可选) |
 | `search_code` | 代码搜索（调 ripgrep） | pattern, path(可选), glob(可选) |
 
-### 4.4 exec_shell 安全硬限制
+### 4.4 exec_shell 环境说明
 
-以下命令**硬性禁止执行**（不可配置，不可绕过，所有审批模式下均拒绝）：
+- **Shell**：PowerShell（`powershell.exe -NoProfile -Command ...`）
+- **编码**：代码页 65001（UTF-8），即执行前自动 `chcp 65001`
+- **平台**：Windows
 
-| 禁止命令 | 原因 |
-|---------|------|
-| `rm -rf` / `rm -r -f` / `rm --recursive --force` | 递归强制删除风险极高，必须逐个文件确认删除 |
-| `sudo` / `su` | 提权操作禁止 |
-| `chmod 777` | 过于宽松的权限 |
-| `mkfs.*` / `dd` | 磁盘操作 |
-| `> /dev/sda*` | 块设备覆写 |
-| `:(){ :|:& };:` | fork bomb |
-| `chown -R /` | 递归修改根目录所有者 |
+**命令包装方式：**
 
-**`rm` 具体行为：**
-- `rm -rf` 和所有变体 → 硬拒绝，返回错误："`rm -rf` 已被禁止。请明确列出要删除的每个文件并逐个使用 `rm <文件路径>`。"
-- `rm <单个文件>` → 允许（受审批模式控制）
-- `rm -r <目录>` → 允许但需逐项确认（受审批模式控制）
+```rust
+// exec_shell 内部
+let wrapped_cmd = format!(
+    "chcp 65001 > $null; {}",
+    user_cmd
+);
+let output = Command::new("powershell.exe")
+    .args(["-NoProfile", "-Command", &wrapped_cmd])
+    .output()
+    .await?;
+```
 
-**提示词层面约束：**
+### 4.5 exec_shell 安全硬限制
+
+以下命令**硬性拒绝，不弹出审批对话框，直接返回错误给大模型**：
+
+| 禁止命令/模式 | 返回给模型的错误信息 |
+|--------------|-------------------|
+| `rm -rf` / `rm -r -f` / `Remove-Item -Recurse -Force` | "递归强制删除已被系统禁止。请使用 `Remove-Item <具体文件路径>` 逐个删除文件。" |
+| `sudo` / `su` / `runas` | "提权操作已被系统禁止。" |
+| `mkfs.*` / `format-*` / `dd` | "磁盘格式化/覆写已被系统禁止。" |
+| fork bomb / 无限递归 | "系统资源滥用已被系统禁止。" |
+| `del /f /s /q C:\*` / `rd /s /q C:\*` | "递归强制删除已被系统禁止。请逐个指定文件路径。" |
+
+**删除文件行为（PowerShell）：**
+- `Remove-Item <单个文件>` — 允许（受审批模式控制）
+- `Remove-Item -Recurse <目录>` — 允许但需逐项确认（受审批模式控制）
+- `Remove-Item -Recurse -Force <任意路径>` — **硬拒绝**，不弹审批，直接返回错误
+- `del <单个文件>` — 允许（受审批模式控制）
+- `del /f /s /q <路径>` — **硬拒绝**
+
+**核心原则：** 强制删除（`-Force`/`/f`）加递归（`-Recurse`/`/s`）组合在任何情况下都硬拒绝，不走审批流程，直接告诉大模型换方案。
+
+### 4.6 write_file 编码
+
+所有 `write_file` 操作以 **UTF-8（无 BOM）** 编码写入文件。
+
+### 4.7 提示词层面约束
 
 全局 AGENTS.md 模板中默认包含以下规则：
 
 ```markdown
+## 环境
+
+- 操作系统：Windows
+- Shell：PowerShell（powershell.exe -NoProfile）
+- 编码：UTF-8（代码页 65001）
+- 文件写入编码：UTF-8 无 BOM
+
 ## 安全限制（不可违反）
 
-- 禁止使用 `rm -rf` 及任何变体。需要删除文件时，必须逐个指定文件路径
-- 禁止使用 `sudo`、`su` 等提权命令
-- 禁止对系统目录（/etc、/boot、/sys 等）进行写操作
-- 禁止下载并直接执行未经用户审查的脚本（curl | bash 等模式）
+- 禁止使用 `Remove-Item -Recurse -Force`、`del /f /s` 等递归强制删除命令
+- 需要删除文件时，必须使用 `Remove-Item <具体文件路径>` 逐个删除
+- 禁止使用 `runas` 等提权命令
+- 禁止对系统目录（C:\Windows、C:\Program Files 等）进行写操作
+- 禁止下载并直接执行未经用户审查的脚本
 - exec_shell 执行前应确认命令的安全性
 ```
 
@@ -454,14 +488,15 @@ ToolCall 到来
 
 以下命令**在任何模式下均硬性拒绝**，错误信息反馈给模型，让模型换方案：
 
-| 禁止模式 | 拒绝原因 |
-|---------|---------|
-| `rm -rf` / `rm -r -f` / `rm --recursive --force` | 递归强制删除已被禁止，请明确列出每个要删除的文件路径，使用 `rm <文件路径>` 逐个删除 |
-| `sudo` / `su` | 提权操作已被禁止 |
-| `chmod 777` | 过于宽松的权限设置已被禁止 |
-| `mkfs.*` / `dd of=/dev/*` | 磁盘格式化/覆写已被禁止 |
-| `chown -R /` | 递归修改根目录所有者已被禁止 |
-| fork bomb 模式 | 系统资源滥用已被禁止 |
+| 禁止模式 | 返回给模型的错误 |
+|---------|-----------------|
+| `Remove-Item -Recurse -Force` / `rd -Recurse -Force` | "递归强制删除已被系统禁止。请使用 `Remove-Item <具体文件路径>` 逐个删除。" |
+| `del /f /s /q` / `rd /s /q` | "递归强制删除已被系统禁止。请逐个指定文件路径。" |
+| `runas` / 提权操作 | "提权操作已被系统禁止。" |
+| `format-*` / `diskpart` | "磁盘操作已被系统禁止。" |
+| fork bomb / 无限递归 | "系统资源滥用已被系统禁止。" |
+
+**关键：** 以上全部**不弹审批对话框**，SafetyGuard 直接拦截并返回错误给大模型。
 
 ### 10.3 Tool Choice
 
@@ -505,14 +540,13 @@ MVP 全部使用 `Auto`（模型自主决定是否调用工具）。
 
 ### 11.3 危险命令判定（confirm 模式）
 
-以下模式触发确认（硬限制列表之外的危险操作）：
+以下模式触发审批确认（硬限制列表之外的危险操作）：
 
-- `rm <文件>`（单个删除需确认）
-- `rm -r <目录>`（递归删除需确认）
-- `chmod`（权限变更需确认）
-- `curl ... | bash` / `wget ... | sh`（管道执行需确认）
-- 任何写入 `/etc/`、`/boot/`、`/sys/`、`~/.ssh/` 的操作
-- 任何访问外网 IP 的 curl/wget（非 API 域名）
+- `Remove-Item <文件>`（单个删除需确认）
+- `Remove-Item -Recurse <目录>`（递归删除需确认，不含 -Force）
+- 任何写入 `C:\Windows\`、`C:\Program Files\`、`C:\Program Files (x86)\` 的操作
+- `Invoke-WebRequest ... | Invoke-Expression`（下载并执行需确认）
+- 任何访问外网 IP 的网络请求（非已知 API 域名）
 
 ### 11.4 模式切换
 
