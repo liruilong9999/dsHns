@@ -18,7 +18,7 @@
 | 交互界面 | 增强 REPL（rustyline） |
 | 存储 | 纯文件（JSON/Markdown），根目录 `~/.dsHns_rs/` |
 | Agent 循环 | 流式（SSE 边收边执行 tool call） |
-| MVP 工具 | read_file / write_file / exec_shell / search_code（4 个） |
+| MVP 工具 | read_file / write_file / exec_shell / search_code / task（5 个） |
 | 项目结构 | Cargo workspace 多 crate |
 | 架构模式 | 事件驱动管道 |
 | 默认模型 | `deepseek-v4-flash` |
@@ -63,6 +63,7 @@ dshns/
 │   │   └── src/
 │   │       ├── loop.rs         # AgentLoop（事件管道主循环）
 │   │       ├── context.rs      # ContextManager（消息组装 + 上下文压缩）
+│   │       ├── subagent.rs     # SubAgentTool（子智能体工具）
 │   │       ├── safety.rs       # SafetyGuard（硬限制，不可绕过）
 │   │       └── approval.rs     # Approver（软审批模式）
 │   │
@@ -180,6 +181,7 @@ pub trait Tool: Send + Sync {
 | `write_file` | 写入/覆盖文件（UTF-8 编码） | path, content |
 | `exec_shell` | 执行 PowerShell 命令（Windows） | cmd, cwd(可选) |
 | `search_code` | 代码搜索（调 ripgrep） | pattern, path(可选), glob(可选) |
+| `task` | 创建子智能体执行独立任务 | mode(继承/隔离), prompt, description(可选) |
 
 ### 4.4 exec_shell 环境说明
 
@@ -248,7 +250,129 @@ let output = Command::new("powershell.exe")
 - exec_shell 执行前应确认命令的安全性
 ```
 
-### 4.5 工具结果截断
+### 4.8 子智能体工具（task）
+
+#### 设计原则
+
+主智能体可通过 `task` 工具创建子智能体来执行独立任务。子智能体不可再创建子智能体（深度限制 1 层）。
+
+#### 两种模式
+
+```
+┌──────────────────────────────────────┐
+│           继承模式（inherit）          │
+│                                      │
+│  主 Agent 上下文                      │
+│  ┌──────────────────────┐            │
+│  │ System Prompt        │  复制 → 子Agent
+│  │ 对话历史 (messages)   │  复制 → 子Agent
+│  │ 工具列表              │  复制 → 子Agent
+│  │ 审批模式              │  复制 → 子Agent
+│  └──────────────────────┘            │
+│                                      │
+│  子 Agent 拥有完整上下文，可以延续    │
+│  主 Agent 的讨论继续深入工作          │
+└──────────────────────────────────────┘
+
+┌──────────────────────────────────────┐
+│           隔离模式（isolated）         │
+│                                      │
+│  子 Agent                            │
+│  ┌──────────────────────┐            │
+│  │ System Prompt (新)    │  仅全局 AGENTS.md
+│  │ 对话历史              │  仅当前 task prompt
+│  │ 工具列表              │  完整工具集
+│  │ 审批模式              │  继承主 Agent 审批模式
+│  └──────────────────────┘            │
+│                                      │
+│  子 Agent 从头开始，无主 Agent 上下文 │
+│  适合独立的小任务                    │
+└──────────────────────────────────────┘
+```
+
+#### 工具定义
+
+```rust
+// agent/src/subagent.rs
+
+pub struct SubAgentTool {
+    agent_loop: Arc<AgentLoop>,       // 复用主循环，但设置 depth=0
+    session_store: Arc<SessionStore>,
+    config: SubAgentConfig,
+}
+
+pub struct SubAgentConfig {
+    pub max_tool_rounds: u32,         // 子智能体最大工具轮数，默认 10
+    pub tool_timeout_secs: u64,       // 默认 60
+    pub inherit_mode_max_messages: usize,  // 继承模式最大携带消息数，默认 20
+}
+
+pub enum SubAgentMode {
+    /// 继承模式：复制主智能体上下文
+    Inherit,
+    /// 隔离模式：无主智能体上下文
+    Isolated,
+}
+```
+
+#### 工具参数（发给 API）
+
+```json
+{
+  "name": "task",
+  "description": "创建子智能体执行独立任务。适合并行处理多个独立子问题。子智能体不可再创建子智能体。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": ["inherit", "isolated"],
+        "description": "inherit: 子智能体继承当前对话上下文; isolated: 子智能体无上下文，独立执行"
+      },
+      "prompt": {
+        "type": "string",
+        "description": "子智能体的任务描述"
+      },
+      "description": {
+        "type": "string",
+        "description": "简短描述（3-5 字），用于日志显示"
+      }
+    },
+    "required": ["mode", "prompt"]
+  }
+}
+```
+
+#### 执行流程
+
+```
+主 Agent 调用 task 工具
+  → 创建子 AgentLoop（depth=0）
+  → 根据 mode 构建子 Agent 初始上下文
+  → 子 Agent 运行（有自己的工具循环，但不能调 task）
+  → 子 Agent 完成后返回最终响应文本
+  → 主 Agent 收到 ToolOutcome（content = 子 Agent 的最终回答）
+  → 主 Agent 继续
+```
+
+#### 关键约束
+
+- **深度限制**：子 Agent 的 `AgentLoop` 设置 `depth: 0`，工具列表中**不包含 `task` 工具**，确保不可创建孙智能体
+- **超时**：子智能体整体运行时间受 `subagent_timeout_secs`（默认 300s）限制
+- **审批**：子智能体继承主智能体的审批模式，确认操作统一弹给用户
+- **上下文截断**：继承模式下最多携带最近 `inherit_mode_max_messages` 条消息
+- **结果截断**：子智能体返回结果同样受 `max_tool_result_tokens` 限制
+
+#### 依赖关系
+
+`SubAgentTool` 实现在 `agent` crate（而非 `tools` crate），因为需要操作 `AgentLoop` 内部。`Tool` trait 定义在 `core`，不产生循环依赖：
+
+```
+core (Tool trait) ← tools (builtin: read_file, write_file, exec_shell, search_code)
+core (Tool trait) ← agent (SubAgentTool impl Tool)
+```
+
+### 4.9 工具结果截断
 
 单次工具结果超过 `max_tool_result_tokens`（配置项，默认 8000 tokens）时，截断为"头 40% + 尾 50% + 省略标记"。
 
@@ -294,6 +418,10 @@ pub struct AgentLoop {
     context_manager: ContextManager,
     safety_guard: SafetyGuard,  // 硬限制（不可绕过）
     approver: Approver,        // 软限制（审批模式）
+    /// 智能体深度：主 Agent = 1，子 Agent = 0（不可再创建子智能体）
+    depth: u8,
+    /// 子智能体可用的工具名称集合（主 Agent = 全部，子 Agent = 排除 task）
+    allowed_tools: Option<HashSet<String>>,
 }
 ```
 
@@ -412,6 +540,11 @@ request_timeout_secs = 120
 [agent]
 max_tool_rounds = 25
 tool_timeout_secs = 60
+
+[subagent]
+max_tool_rounds = 10              # 子智能体最大工具轮数
+timeout_secs = 300                # 子智能体总体超时
+inherit_mode_max_messages = 20    # 继承模式下最多携带的消息数
 
 [context]
 max_window_tokens = 131072        # DeepSeek V4 = 128K
