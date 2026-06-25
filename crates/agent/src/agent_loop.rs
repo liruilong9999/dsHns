@@ -123,7 +123,7 @@ impl AgentLoop {
             }
 
             tool_rounds += 1;
-            if tool_rounds > self.config.max_tool_rounds {
+            if tool_rounds >= self.config.max_tool_rounds {
                 let _ = event_tx.send(AgentEvent::Error("达到最大工具轮数".into()));
                 let _ = event_tx.send(AgentEvent::SessionComplete);
                 return Ok(AgentOutcome { final_response: text, messages, usage: total_usage, tool_rounds });

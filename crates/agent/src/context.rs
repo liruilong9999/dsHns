@@ -33,7 +33,7 @@ impl ContextManager {
         let total = msgs.len();
         for (i, msg) in msgs.into_iter().skip(1).enumerate() {
             match &msg {
-                Message::Tool { content, .. } if i < total.saturating_sub(7) => {
+                Message::Tool { content, .. } if i < total.saturating_sub(8) => {
                     result.push(Message::Tool { tool_call_id: "truncated".into(), content: self.truncate(content, self.config.max_tool_result_tokens) });
                 }
                 _ => result.push(msg),
