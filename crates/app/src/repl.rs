@@ -1,17 +1,23 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use dshns_core::event::AgentEvent;
+use dshns_core::message::Message;
 use dshns_core::tool::ToolStatus;
 use dshns_agent::agent_loop::AgentLoop;
 use rustyline::{Editor, error::ReadlineError, history::DefaultHistory};
 
-pub struct Repl { editor: Editor<(), DefaultHistory>, agent: Arc<AgentLoop> }
+pub struct Repl {
+    editor: Editor<(), DefaultHistory>,
+    agent: Arc<AgentLoop>,
+    /// 会话历史（不含 system prompt），每轮对话后累积
+    history: Vec<Message>,
+}
 
 impl Repl {
     pub fn new(agent: Arc<AgentLoop>) -> Self {
         let mut editor = Editor::<(), DefaultHistory>::new().unwrap();
         let _ = editor.load_history(history_path().as_deref().unwrap_or(""));
-        Self { editor, agent }
+        Self { editor, agent, history: Vec::new() }
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -45,7 +51,8 @@ impl Repl {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let agent = self.agent.clone();
         let owned = input.to_string();
-        tokio::spawn(async move { agent.run(&owned, vec![], tx).await });
+        let history = std::mem::take(&mut self.history);
+        let handle = tokio::spawn(async move { agent.run(&owned, history, tx).await });
 
         while let Some(ev) = rx.recv().await {
             match ev {
@@ -64,6 +71,18 @@ impl Repl {
             }
         }
         println!();
+
+        // 保存本轮对话历史，供下一轮使用
+        match handle.await {
+            Ok(Ok(outcome)) => {
+                // 去掉开头的 system prompt，后续作为历史传入
+                self.history = outcome.messages.into_iter()
+                    .skip_while(|m| matches!(m, Message::System { .. }))
+                    .collect();
+            }
+            Ok(Err(e)) => eprintln!("Agent 错误: {}", e),
+            Err(e) => eprintln!("任务错误: {}", e),
+        }
         Ok(())
     }
 
