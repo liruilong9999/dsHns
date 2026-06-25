@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/deepseek-client",
+    "crates/tools",
+    "crates/session-store",
+    "crates/agent",
+    "crates/app",
+]
+resolver = "2"
